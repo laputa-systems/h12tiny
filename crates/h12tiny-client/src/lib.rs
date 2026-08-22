@@ -50,6 +50,14 @@ pub struct Error {
 pub enum ErrorKind {
     Canceled,
     UnsupportedScheme,
+    /// The per-request DNS phase exceeded its deadline.
+    DnsTimeout,
+    /// The per-request TCP establishment phase exceeded its deadline.
+    ConnectTimeout,
+    /// The per-request TLS and ALPN phase exceeded its deadline.
+    TlsTimeout,
+    /// The per-request request-dispatch and response-header phase exceeded its deadline.
+    HeadersTimeout,
     Connect,
     Tls,
     Alpn,
@@ -83,6 +91,10 @@ impl fmt::Display for Error {
         f.write_str(match self.kind {
             ErrorKind::Canceled => "request was cancelled before it could be sent",
             ErrorKind::UnsupportedScheme => "request URI scheme is unsupported",
+            ErrorKind::DnsTimeout => "DNS resolution timed out",
+            ErrorKind::ConnectTimeout => "TCP connection establishment timed out",
+            ErrorKind::TlsTimeout => "TLS negotiation timed out",
+            ErrorKind::HeadersTimeout => "request dispatch or response headers timed out",
             ErrorKind::Connect => "connection establishment failed",
             ErrorKind::Tls => "TLS negotiation or certificate validation failed",
             ErrorKind::Alpn => "TLS ALPN did not select an allowed HTTP protocol",
@@ -93,6 +105,92 @@ impl fmt::Display for Error {
             ErrorKind::AbsoluteUriRequired => "client requests require an absolute URI",
             ErrorKind::ProtocolUnavailable => "the selected protocol was not enabled in this build",
         })
+    }
+}
+
+/// Optional deadlines for one request's transport phases.
+///
+/// These values are never stored in the client or its origin pool. A reused
+/// connection therefore skips DNS, TCP, TLS, and ALPN phases, while every
+/// request receives its own `headers_timeout` race. h12tiny deliberately has
+/// no whole-request deadline: callers that stream a response body must keep
+/// the body-idle contract at their own boundary.
+///
+/// DNS, TCP, and TLS limits are enforced by h12tiny's default direct-origin
+/// connector. A custom [`Dialer`] owns opaque establishment; a [`TcpDialer`]
+/// similarly owns its DNS/TCP internals. Both receive these options and must
+/// enforce the phases they own, while h12tiny continues to enforce its own
+/// TLS and ALPN phase after a custom TCP dialer returns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestOptions {
+    dns_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    tls_timeout: Option<Duration>,
+    headers_timeout: Option<Duration>,
+}
+
+impl RequestOptions {
+    /// Starts with no request-scoped phase deadlines.
+    pub const fn new() -> Self {
+        Self {
+            dns_timeout: None,
+            connect_timeout: None,
+            tls_timeout: None,
+            headers_timeout: None,
+        }
+    }
+
+    /// Limits DNS resolution for the default direct-origin connector.
+    pub fn with_dns_timeout(mut self, timeout: Duration) -> Self {
+        self.dns_timeout = Some(timeout);
+        self
+    }
+
+    /// Returns the DNS deadline selected for this request.
+    pub const fn dns_timeout(self) -> Option<Duration> {
+        self.dns_timeout
+    }
+
+    /// Limits aggregate TCP establishment across all resolved addresses.
+    ///
+    /// A custom [`Dialer`] or [`TcpDialer`] receives this value and enforces
+    /// its own TCP policy without h12tiny conflating it with DNS time.
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Returns the aggregate TCP-establishment deadline selected for this request.
+    pub const fn connect_timeout(self) -> Option<Duration> {
+        self.connect_timeout
+    }
+
+    /// Limits Rustls negotiation and ALPN after TCP is established.
+    pub fn with_tls_timeout(mut self, timeout: Duration) -> Self {
+        self.tls_timeout = Some(timeout);
+        self
+    }
+
+    /// Returns the TLS and ALPN deadline selected for this request.
+    pub const fn tls_timeout(self) -> Option<Duration> {
+        self.tls_timeout
+    }
+
+    /// Limits request dispatch through receipt of response headers.
+    pub fn with_headers_timeout(mut self, timeout: Duration) -> Self {
+        self.headers_timeout = Some(timeout);
+        self
+    }
+
+    /// Returns the request-dispatch and response-header deadline selected for this request.
+    pub const fn headers_timeout(self) -> Option<Duration> {
+        self.headers_timeout
+    }
+
+    fn has_connection_timeout(self) -> bool {
+        self.dns_timeout.is_some()
+            || self.connect_timeout.is_some()
+            || self.tls_timeout.is_some()
     }
 }
 
@@ -469,7 +567,28 @@ where
         self.request(request)
     }
 
-    pub fn request(&self, mut request: Request<B>) -> ResponseFuture {
+    /// Starts a request without request-scoped phase deadlines.
+    ///
+    /// This retains any legacy connector-wide establishment timeout configured
+    /// through [`ConnectorBuilder::connect_timeout`]. New callers that need
+    /// distinct phase deadlines should use [`Self::request_with_options`].
+    pub fn request(&self, request: Request<B>) -> ResponseFuture {
+        self.request_with_options(request, RequestOptions::new())
+    }
+
+    /// Starts a request with deadlines that belong only to this request.
+    ///
+    /// The options are carried through pool acquisition: a checked-out pooled
+    /// connection avoids connection-establishment phases, while a new socket
+    /// receives the DNS/TCP/TLS limits before request dispatch races the
+    /// header limit. Options never participate in pool identity, so a caller
+    /// cannot accidentally fragment reusable connections by choosing a
+    /// different deadline.
+    pub fn request_with_options(
+        &self,
+        mut request: Request<B>,
+        options: RequestOptions,
+    ) -> ResponseFuture {
         let is_connect = request.method() == Method::CONNECT;
         match request.version() {
             Version::HTTP_11 | Version::HTTP_2 => {}
@@ -492,7 +611,7 @@ where
         };
         let client = self.clone();
         ResponseFuture {
-            inner: Box::pin(async move { client.send_request(request, key).await }),
+            inner: Box::pin(async move { client.send_request(request, key, options).await }),
         }
     }
 
@@ -500,10 +619,11 @@ where
         self,
         mut request: Request<B>,
         key: PoolKey,
+        options: RequestOptions,
     ) -> Result<Response<Incoming>, Error> {
         let absolute_uri = request.uri().clone();
         loop {
-            match self.try_send_request(request, key.clone()).await {
+            match self.try_send_request(request, key.clone(), options).await {
                 Ok(response) => return Ok(response),
                 Err(TrySendError::Final(error)) => return Err(error),
                 Err(TrySendError::Retryable {
@@ -530,9 +650,10 @@ where
         &self,
         mut request: Request<B>,
         key: PoolKey,
+        options: RequestOptions,
     ) -> Result<Response<Incoming>, TrySendError<B>> {
         let mut pooled = self
-            .connection_for(key)
+            .connection_for(key, options)
             .await
             .map_err(TrySendError::Final)?;
         if pooled.is_http1() {
@@ -548,7 +669,19 @@ where
             connection: pooled.connection_info,
             reused: pooled.is_reused(),
         };
-        let mut response = match pooled.try_send_request(request).await {
+        let sent = match options.headers_timeout {
+            Some(timeout) => {
+                let send = Box::pin(pooled.try_send_request(request));
+                match future::select(send, self.connector.sleep(timeout)).await {
+                    Either::Left((result, _)) => result,
+                    Either::Right(_) => {
+                        return Err(TrySendError::Final(Error::new(ErrorKind::HeadersTimeout)))
+                    }
+                }
+            }
+            None => pooled.try_send_request(request).await,
+        };
+        let mut response = match sent {
             Ok(response) => response,
             Err(mut error) => {
                 if let Some(request) = error.take_message() {
@@ -584,9 +717,10 @@ where
     async fn connection_for(
         &self,
         key: PoolKey,
+        options: RequestOptions,
     ) -> Result<pool::Pooled<PoolClient<B>, PoolKey>, Error> {
         loop {
-            match self.one_connection_for(key.clone()).await {
+            match self.one_connection_for(key.clone(), options).await {
                 Ok(pooled) => return Ok(pooled),
                 Err(ConnectionError::Final(error)) => return Err(error),
                 Err(ConnectionError::Retry) if self.config.retry_canceled_requests => continue,
@@ -598,12 +732,16 @@ where
     async fn one_connection_for(
         &self,
         key: PoolKey,
+        options: RequestOptions,
     ) -> Result<pool::Pooled<PoolClient<B>, PoolKey>, ConnectionError> {
         if !self.pool.is_enabled() {
-            return self.connect_to(key).await.map_err(ConnectionError::Final);
+            return self
+                .connect_to(key, options)
+                .await
+                .map_err(ConnectionError::Final);
         }
         let checkout = self.pool.checkout(key.clone());
-        let connect = Box::pin(self.connect_to(key));
+        let connect = Box::pin(self.connect_to(key, options));
         match future::select(checkout, connect).await {
             Either::Left((Ok(pooled), _)) => Ok(pooled),
             Either::Right((Ok(pooled), _)) => Ok(pooled),
@@ -633,6 +771,7 @@ where
     async fn connect_to(
         &self,
         key: PoolKey,
+        options: RequestOptions,
     ) -> Result<pool::Pooled<PoolClient<B>, PoolKey>, Error> {
         let origin = normalize::pool_key_origin(&key);
         let mut connecting = self
@@ -642,9 +781,10 @@ where
         let connect_started = Instant::now();
         let connected = match self
             .connector
-            .connect(
+            .connect_with_options(
                 normalize::pool_key_uri(key.clone()),
                 self.config.protocol == PoolProtocol::Http2,
+                options,
             )
             .await
         {

@@ -216,7 +216,7 @@ impl Drop for PendingDialDrop {
 
 #[cfg(feature = "http1")]
 impl TcpDialer for CancelThenConnectTcpDialer {
-    fn connect(&self, origin: http::Uri) -> TcpDialFuture {
+    fn connect(&self, origin: http::Uri, _: h12tiny::client::RequestOptions) -> TcpDialFuture {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             let drops = self.drops.clone();
             return Box::pin(async move {

@@ -10,7 +10,9 @@ use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use futures_util::future::{self, Either};
-use h12tiny::client::{Client, ConnectionProtocol, DebugEvent, DebugEventLog, ErrorKind};
+use h12tiny::client::{
+    Client, ConnectionProtocol, DebugEvent, DebugEventLog, ErrorKind, RequestOptions,
+};
 use h12tiny::runtime::BoxSendFuture;
 use http::{Request, StatusCode};
 use http_body::{Body, Frame};
@@ -95,6 +97,32 @@ fn direct_h1_uses_origin_form_and_synthesizes_host_on_the_wire() {
     });
 }
 
+#[test]
+fn request_headers_timeout_cancels_only_the_pending_exchange() {
+    smol::block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = smol::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            async_io::Timer::after(Duration::from_millis(20)).await;
+        });
+
+        let client = Client::builder(SmolExecutor).build::<EmptyBody>();
+        let result = client
+            .request_with_options(
+                Request::builder()
+                    .uri(format!("http://{address}/pending-headers"))
+                    .body(EmptyBody)
+                    .unwrap(),
+                RequestOptions::new().with_headers_timeout(Duration::ZERO),
+            )
+            .await;
+
+        assert!(matches!(result, Err(error) if error.kind() == ErrorKind::HeadersTimeout));
+        peer.await;
+    });
+}
+
 async fn read_head(stream: &mut async_net::TcpStream) -> Vec<u8> {
     let mut request = Vec::new();
     let mut byte = [0; 1];
@@ -132,19 +160,33 @@ fn sequential_h1_requests_reuse_one_direct_connection() {
         let mut builder = Client::builder(SmolExecutor);
         builder.debug_event_log(events.clone());
         let client = builder.build::<EmptyBody>();
-        for path in ["/one", "/two"] {
-            let response = client
-                .request(
-                    Request::builder()
-                        .uri(format!("http://{address}{path}"))
-                        .body(EmptyBody)
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            drop(response);
-        }
+        let first_response = client
+            .request(
+                Request::builder()
+                    .uri(format!("http://{address}/one"))
+                    .body(EmptyBody)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first_response.status(), StatusCode::OK);
+        drop(first_response);
+
+        // The zero TCP deadline would reject a new socket. A successful
+        // second exchange proves this pooled connection is neither keyed by
+        // options nor subjected to a fresh connection deadline.
+        let second_response = client
+            .request_with_options(
+                Request::builder()
+                    .uri(format!("http://{address}/two"))
+                    .body(EmptyBody)
+                    .unwrap(),
+                RequestOptions::new().with_connect_timeout(Duration::ZERO),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second_response.status(), StatusCode::OK);
+        drop(second_response);
         assert!(events.drain().iter().any(|event| matches!(
             event,
             DebugEvent::ConnectionPooled { origin } if origin == &format!("http://{address}")

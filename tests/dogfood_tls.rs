@@ -41,7 +41,7 @@ struct EchoService {
 struct FixtureTcpDialer;
 
 impl TcpDialer for FixtureTcpDialer {
-    fn connect(&self, origin: http::Uri) -> TcpDialFuture {
+    fn connect(&self, origin: http::Uri, _: h12tiny::client::RequestOptions) -> TcpDialFuture {
         let host = origin.host().expect("fixture origin has host").to_owned();
         let port = origin.port_u16().expect("fixture origin has port");
         Box::pin(async move {

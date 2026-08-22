@@ -31,6 +31,8 @@ use hyper::rt::Timer;
 use h12tiny_core::io::FuturesIo;
 use h12tiny_core::runtime::AsyncIoTimer;
 
+use super::RequestOptions;
+
 /// A raw connection stream accepted by a custom [`Dialer`].
 ///
 /// It is intentionally a Hyper-runtime stream rather than a futures-I/O
@@ -148,9 +150,17 @@ pub type TcpDialFuture =
 /// true only when the client is configured for HTTP/2-only operation. A
 /// dialer is responsible for returning a stream whose declared protocol is
 /// compatible with that request. It does not receive individual requests and
-/// cannot implement hidden proxy, redirect, or retry policy.
+/// cannot implement hidden proxy, redirect, or retry policy. It receives the
+/// request's phase options so a custom transport can honor its own DNS, TCP,
+/// and TLS boundaries. A custom dialer owns those opaque phases completely;
+/// h12tiny does not collapse them into a misleading outer deadline.
 pub trait Dialer: Send + Sync + 'static {
-    fn connect(&self, origin: Uri, require_http2: bool) -> DialFuture;
+    fn connect(
+        &self,
+        origin: Uri,
+        require_http2: bool,
+        options: RequestOptions,
+    ) -> DialFuture;
 }
 
 /// Future returned by [`Resolver::resolve`].
@@ -205,7 +215,7 @@ impl Resolver for SystemResolver {
 /// performs the HTTP/1 or HTTP/2 handshake. The dialer must not perform TLS or
 /// HTTP negotiation itself.
 pub trait TcpDialer: Send + Sync + 'static {
-    fn connect(&self, origin: Uri) -> TcpDialFuture;
+    fn connect(&self, origin: Uri, options: RequestOptions) -> TcpDialFuture;
 }
 
 #[derive(Debug)]
@@ -223,6 +233,10 @@ pub(crate) enum Error {
     Connect(std::io::Error),
     Resolve(DialError),
     Custom(DialError),
+    DnsTimeout,
+    ConnectTimeout,
+    #[cfg(feature = "tls")]
+    TlsTimeout,
     Timeout,
     #[cfg(feature = "tls")]
     Tls(std::io::Error),
@@ -248,6 +262,10 @@ impl fmt::Display for Error {
             Self::Connect(error) => error.fmt(f),
             Self::Resolve(error) => error.fmt(f),
             Self::Custom(error) => error.fmt(f),
+            Self::DnsTimeout => f.write_str("DNS resolution timed out"),
+            Self::ConnectTimeout => f.write_str("TCP connection establishment timed out"),
+            #[cfg(feature = "tls")]
+            Self::TlsTimeout => f.write_str("TLS negotiation timed out"),
             Self::Timeout => f.write_str("connection establishment timed out"),
             #[cfg(feature = "tls")]
             Self::Tls(error) => error.fmt(f),
@@ -283,6 +301,10 @@ impl Error {
             | Self::Resolve(_)
             | Self::Custom(_)
             | Self::Timeout => super::ErrorKind::Connect,
+            Self::DnsTimeout => super::ErrorKind::DnsTimeout,
+            Self::ConnectTimeout => super::ErrorKind::ConnectTimeout,
+            #[cfg(feature = "tls")]
+            Self::TlsTimeout => super::ErrorKind::TlsTimeout,
         }
     }
 }
@@ -556,8 +578,29 @@ impl Connector {
             .map(Self::with_tls_config)
     }
 
-    pub(crate) async fn connect(&self, uri: Uri, require_h2: bool) -> Result<Connected, Error> {
-        let connect = Box::pin(self.connect_without_timeout(uri, require_h2));
+    #[cfg(test)]
+    pub(crate) async fn connect(
+        &self,
+        uri: Uri,
+        require_h2: bool,
+    ) -> Result<Connected, Error> {
+        self.connect_with_options(uri, require_h2, RequestOptions::new())
+            .await
+    }
+
+    pub(crate) async fn connect_with_options(
+        &self,
+        uri: Uri,
+        require_h2: bool,
+        options: RequestOptions,
+    ) -> Result<Connected, Error> {
+        if options.has_connection_timeout() {
+            return self
+                .connect_without_timeout(uri, require_h2, options)
+                .await;
+        }
+
+        let connect = Box::pin(self.connect_without_timeout(uri, require_h2, options));
         match self.connect_timeout {
             None => connect.await,
             Some(timeout) => match future::select(connect, self.timer.sleep(timeout)).await {
@@ -567,13 +610,24 @@ impl Connector {
         }
     }
 
+    pub(crate) fn sleep(&self, duration: Duration) -> Pin<Box<dyn hyper::rt::Sleep>> {
+        self.timer.sleep(duration)
+    }
+
     async fn connect_without_timeout(
         &self,
         uri: Uri,
         require_h2: bool,
+        options: RequestOptions,
     ) -> Result<Connected, Error> {
         if let ConnectorKind::Custom(dialer) = &self.kind {
-            return dialer.connect(uri, require_h2).await.map_err(Error::Custom);
+            let connect = async {
+                dialer
+                    .connect(uri, require_h2, options)
+                    .await
+                    .map_err(Error::Custom)
+            };
+            return connect.await;
         }
         // `http::Uri::host()` preserves RFC authority brackets around IPv6
         // literals. DNS and Rustls `ServerName` require the bare address.
@@ -599,7 +653,13 @@ impl Connector {
         }
         let tcp = match &self.kind {
             ConnectorKind::Tcp(dialer) => {
-                Some(dialer.connect(uri.clone()).await.map_err(Error::Custom)?)
+                let connect = async {
+                    dialer
+                        .connect(uri.clone(), options)
+                        .await
+                        .map_err(Error::Custom)
+                };
+                Some(connect.await?)
             }
             ConnectorKind::Default | ConnectorKind::Custom(_) => None,
         };
@@ -609,7 +669,7 @@ impl Connector {
                     Some(tcp) => tcp,
                     None => {
                         let stream = self
-                            .connect_tcp(&host, uri.port_u16().unwrap_or(80))
+                            .connect_tcp(&host, uri.port_u16().unwrap_or(80), options)
                             .await?;
                         let (local_addr, peer_addr) = socket_addresses(&stream);
                         TcpConnected::new(stream).with_addresses(local_addr, peer_addr)
@@ -631,7 +691,13 @@ impl Connector {
                 .with_addresses(local_addr, peer_addr))
             }
             "https" => {
-                self.connect_tls(host, uri.port_u16().unwrap_or(443), require_h2, tcp)
+                self.connect_tls(
+                    host,
+                    uri.port_u16().unwrap_or(443),
+                    require_h2,
+                    tcp,
+                    options,
+                )
                     .await
             }
             other => Err(Error::UnsupportedScheme(other.to_owned())),
@@ -645,11 +711,12 @@ impl Connector {
         port: u16,
         require_h2: bool,
         custom_tcp: Option<TcpConnected>,
+        options: RequestOptions,
     ) -> Result<Connected, Error> {
         let tcp = match custom_tcp {
             Some(tcp) => tcp,
             None => {
-                let stream = self.connect_tcp(&host, port).await?;
+                let stream = self.connect_tcp(&host, port, options).await?;
                 let (local_addr, peer_addr) = socket_addresses(&stream);
                 TcpConnected::new(stream).with_addresses(local_addr, peer_addr)
             }
@@ -662,10 +729,19 @@ impl Connector {
         let server_name = futures_rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|_| Error::InvalidServerName(host))?;
         let tls = self.tls.clone();
-        let tls = futures_rustls::TlsConnector::from(tls)
-            .connect(server_name, io)
-            .await
-            .map_err(Error::Tls)?;
+        let tls_connect = async {
+            futures_rustls::TlsConnector::from(tls)
+                .connect(server_name, io)
+                .await
+                .map_err(Error::Tls)
+        };
+        let tls = self
+            .with_timeout(
+                tls_connect,
+                options.tls_timeout,
+                Error::TlsTimeout,
+            )
+            .await?;
         let protocol = match tls.get_ref().1.alpn_protocol() {
             Some(b"h2") => super::ConnectionProtocol::Http2,
             Some(b"http/1.1") | None if !require_h2 => super::ConnectionProtocol::Http1,
@@ -682,19 +758,55 @@ impl Connector {
         _: u16,
         _: bool,
         _: Option<TcpConnected>,
+        _: RequestOptions,
     ) -> Result<Connected, Error> {
         Err(Error::TlsDisabled)
     }
 
-    async fn connect_tcp(&self, host: &str, port: u16) -> Result<Async<StdTcpStream>, Error> {
+    async fn connect_tcp(
+        &self,
+        host: &str,
+        port: u16,
+        options: RequestOptions,
+    ) -> Result<Async<StdTcpStream>, Error> {
+        let resolve = async {
+            self.resolver
+                .resolve(host.to_owned(), port)
+                .await
+                .map_err(Error::Resolve)
+        };
         let addresses = self
-            .resolver
-            .resolve(host.to_owned(), port)
-            .await
-            .map_err(Error::Resolve)?;
-        connect_resolved_addresses(addresses, self.happy_eyeballs_timeout, self.timer.as_ref())
+            .with_timeout(resolve, options.dns_timeout, Error::DnsTimeout)
+            .await?;
+        let connect = async {
+            connect_resolved_addresses(
+                addresses,
+                self.happy_eyeballs_timeout,
+                self.timer.as_ref(),
+            )
             .await
             .map_err(Error::Connect)
+        };
+        self.with_timeout(connect, options.connect_timeout, Error::ConnectTimeout)
+            .await
+    }
+
+    async fn with_timeout<T, F>(
+        &self,
+        future: F,
+        timeout: Option<Duration>,
+        timeout_error: Error,
+    ) -> Result<T, Error>
+    where
+        F: Future<Output = Result<T, Error>>,
+    {
+        match timeout {
+            None => future.await,
+            Some(timeout) => match future::select(Box::pin(future), self.timer.sleep(timeout)).await {
+                Either::Left((result, _)) => result,
+                Either::Right(_) => Err(timeout_error),
+            },
+        }
     }
 }
 
@@ -915,13 +1027,14 @@ mod tests {
         Connector, DialFuture, Dialer, Error, ResolveFuture, Resolver, TcpConnected, TcpDialFuture,
         TcpDialer,
     };
+    use crate::RequestOptions;
     use http::Uri;
 
     #[derive(Clone, Default)]
     struct RecordingDialer(Arc<Mutex<Vec<(Uri, bool)>>>);
 
     impl Dialer for RecordingDialer {
-        fn connect(&self, origin: Uri, require_http2: bool) -> DialFuture {
+        fn connect(&self, origin: Uri, require_http2: bool, _: RequestOptions) -> DialFuture {
             self.0.lock().unwrap().push((origin, require_http2));
             Box::pin(async { Err(Box::new(std::io::Error::other("fixture dial failure")) as _) })
         }
@@ -930,7 +1043,7 @@ mod tests {
     struct PendingDialer;
 
     impl Dialer for PendingDialer {
-        fn connect(&self, _: Uri, _: bool) -> DialFuture {
+        fn connect(&self, _: Uri, _: bool, _: RequestOptions) -> DialFuture {
             Box::pin(std::future::pending())
         }
     }
@@ -938,7 +1051,7 @@ mod tests {
     struct PendingTcpDialer;
 
     impl TcpDialer for PendingTcpDialer {
-        fn connect(&self, _: Uri) -> TcpDialFuture {
+        fn connect(&self, _: Uri, _: RequestOptions) -> TcpDialFuture {
             Box::pin(std::future::pending())
         }
     }
@@ -957,7 +1070,7 @@ mod tests {
     }
 
     impl TcpDialer for DropProbeTcpDialer {
-        fn connect(&self, _: Uri) -> TcpDialFuture {
+        fn connect(&self, _: Uri, _: RequestOptions) -> TcpDialFuture {
             let dropped = self.dropped.clone();
             Box::pin(async move {
                 let _probe = PendingDialDropProbe(dropped);
@@ -979,9 +1092,19 @@ mod tests {
     struct RecordingTcpDialer(Arc<AtomicUsize>);
 
     impl TcpDialer for RecordingTcpDialer {
-        fn connect(&self, _: Uri) -> TcpDialFuture {
+        fn connect(&self, _: Uri, _: RequestOptions) -> TcpDialFuture {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Err(Box::new(std::io::Error::other("unexpected dial")) as _) })
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct OptionsRecordingTcpDialer(Arc<Mutex<Vec<RequestOptions>>>);
+
+    impl TcpDialer for OptionsRecordingTcpDialer {
+        fn connect(&self, _: Uri, options: RequestOptions) -> TcpDialFuture {
+            self.0.lock().unwrap().push(options);
+            Box::pin(async { Err(Box::new(std::io::Error::other("fixture dial failure")) as _) })
         }
     }
 
@@ -989,7 +1112,7 @@ mod tests {
     struct LocalTcpDialer;
 
     impl TcpDialer for LocalTcpDialer {
-        fn connect(&self, origin: Uri) -> TcpDialFuture {
+        fn connect(&self, origin: Uri, _: RequestOptions) -> TcpDialFuture {
             let host = origin.host().unwrap().to_owned();
             let port = origin.port_u16().unwrap();
             Box::pin(async move {
@@ -1149,6 +1272,62 @@ mod tests {
             smol::block_on(connector.connect("http://example.test/".parse().unwrap(), false));
 
         assert!(matches!(result, Err(Error::Timeout)));
+    }
+
+    #[test]
+    fn request_dns_timeout_is_distinct_from_legacy_establishment_timeout() {
+        let connector = Connector::builder().resolver(PendingResolver).build();
+        let result = smol::block_on(connector.connect_with_options(
+            "http://example.test/".parse().unwrap(),
+            false,
+            RequestOptions::new().with_dns_timeout(Duration::ZERO),
+        ));
+
+        assert!(matches!(result, Err(Error::DnsTimeout)));
+    }
+
+    #[test]
+    fn request_options_reach_a_custom_tcp_dialer() {
+        let dialer = OptionsRecordingTcpDialer::default();
+        let options = RequestOptions::new()
+            .with_dns_timeout(Duration::from_millis(1))
+            .with_connect_timeout(Duration::from_millis(2))
+            .with_tls_timeout(Duration::from_millis(3))
+            .with_headers_timeout(Duration::from_millis(4));
+        let connector = Connector::builder().tcp_dialer(dialer.clone()).build();
+        let result = smol::block_on(connector.connect_with_options(
+            "http://example.test/".parse().unwrap(),
+            false,
+            options,
+        ));
+
+        assert!(matches!(result, Err(Error::Custom(_))));
+        assert_eq!(*dialer.0.lock().unwrap(), vec![options]);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn request_tls_timeout_starts_after_tcp_establishment() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            drop(socket);
+        });
+        let connector = Connector::builder().tcp_dialer(LocalTcpDialer).build();
+        let result = smol::block_on(connector.connect_with_options(
+            format!("https://{address}/").parse().unwrap(),
+            false,
+            RequestOptions::new().with_tls_timeout(Duration::ZERO),
+        ));
+
+        assert!(
+            matches!(result.as_ref().err(), Some(Error::TlsTimeout)),
+            "{:?}",
+            result.err()
+        );
+        peer.join().unwrap();
     }
 
     #[test]
