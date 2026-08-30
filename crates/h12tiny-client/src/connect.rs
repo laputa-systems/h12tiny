@@ -155,12 +155,7 @@ pub type TcpDialFuture =
 /// and TLS boundaries. A custom dialer owns those opaque phases completely;
 /// h12tiny does not collapse them into a misleading outer deadline.
 pub trait Dialer: Send + Sync + 'static {
-    fn connect(
-        &self,
-        origin: Uri,
-        require_http2: bool,
-        options: RequestOptions,
-    ) -> DialFuture;
+    fn connect(&self, origin: Uri, require_http2: bool, options: RequestOptions) -> DialFuture;
 }
 
 /// Future returned by [`Resolver::resolve`].
@@ -579,11 +574,7 @@ impl Connector {
     }
 
     #[cfg(test)]
-    pub(crate) async fn connect(
-        &self,
-        uri: Uri,
-        require_h2: bool,
-    ) -> Result<Connected, Error> {
+    pub(crate) async fn connect(&self, uri: Uri, require_h2: bool) -> Result<Connected, Error> {
         self.connect_with_options(uri, require_h2, RequestOptions::new())
             .await
     }
@@ -595,9 +586,7 @@ impl Connector {
         options: RequestOptions,
     ) -> Result<Connected, Error> {
         if options.has_connection_timeout() {
-            return self
-                .connect_without_timeout(uri, require_h2, options)
-                .await;
+            return self.connect_without_timeout(uri, require_h2, options).await;
         }
 
         let connect = Box::pin(self.connect_without_timeout(uri, require_h2, options));
@@ -698,7 +687,7 @@ impl Connector {
                     tcp,
                     options,
                 )
-                    .await
+                .await
             }
             other => Err(Error::UnsupportedScheme(other.to_owned())),
         }
@@ -736,11 +725,7 @@ impl Connector {
                 .map_err(Error::Tls)
         };
         let tls = self
-            .with_timeout(
-                tls_connect,
-                options.tls_timeout,
-                Error::TlsTimeout,
-            )
+            .with_timeout(tls_connect, options.tls_timeout, Error::TlsTimeout)
             .await?;
         let protocol = match tls.get_ref().1.alpn_protocol() {
             Some(b"h2") => super::ConnectionProtocol::Http2,
@@ -779,13 +764,9 @@ impl Connector {
             .with_timeout(resolve, options.dns_timeout, Error::DnsTimeout)
             .await?;
         let connect = async {
-            connect_resolved_addresses(
-                addresses,
-                self.happy_eyeballs_timeout,
-                self.timer.as_ref(),
-            )
-            .await
-            .map_err(Error::Connect)
+            connect_resolved_addresses(addresses, self.happy_eyeballs_timeout, self.timer.as_ref())
+                .await
+                .map_err(Error::Connect)
         };
         self.with_timeout(connect, options.connect_timeout, Error::ConnectTimeout)
             .await
@@ -802,10 +783,12 @@ impl Connector {
     {
         match timeout {
             None => future.await,
-            Some(timeout) => match future::select(Box::pin(future), self.timer.sleep(timeout)).await {
-                Either::Left((result, _)) => result,
-                Either::Right(_) => Err(timeout_error),
-            },
+            Some(timeout) => {
+                match future::select(Box::pin(future), self.timer.sleep(timeout)).await {
+                    Either::Left((result, _)) => result,
+                    Either::Right(_) => Err(timeout_error),
+                }
+            }
         }
     }
 }

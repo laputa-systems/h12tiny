@@ -530,8 +530,8 @@ where
         limit: usize,
     ) -> Result<T, BodyCollectionError<Self::BodyError>> {
         let bytes = collect_bytes_limited(self.into_body(), limit).await?;
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| BodyCollectionError::Json(miniserde::Error))?;
+        let text =
+            std::str::from_utf8(&bytes).map_err(|_| BodyCollectionError::Json(miniserde::Error))?;
         miniserde::json::from_str(text).map_err(BodyCollectionError::Json)
     }
 }

@@ -188,9 +188,7 @@ impl RequestOptions {
     }
 
     fn has_connection_timeout(self) -> bool {
-        self.dns_timeout.is_some()
-            || self.connect_timeout.is_some()
-            || self.tls_timeout.is_some()
+        self.dns_timeout.is_some() || self.connect_timeout.is_some() || self.tls_timeout.is_some()
     }
 }
 
