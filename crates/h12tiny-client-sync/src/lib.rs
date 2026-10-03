@@ -22,6 +22,10 @@ use h12tiny_client_normalize::{extract_origin, normalize_http1_request, Origin};
 use http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version};
 
+/// The `http` crate whose `Request`/`Response` types form this client's API,
+/// reexported so callers build requests with the exact version in use here.
+pub use http;
+
 const MAX_RESPONSE_HEAD_BYTES: usize = 64 * 1024;
 const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
 const MAX_TRAILER_BYTES: usize = 64 * 1024;
@@ -66,11 +70,44 @@ impl Client {
         request: Request<Vec<u8>>,
         timeout: Option<Duration>,
     ) -> Result<Response<ResponseBody>, Error> {
+        let (parts, body) = request.into_parts();
+        let content_length = body.len() as u64;
+        self.send(parts, content_length, body.as_slice(), timeout)
+    }
+
+    /// Sends one request whose body is read from `body` while it is written,
+    /// so large uploads are never held in memory.
+    ///
+    /// Exactly `content_length` bytes are sent as the body, and a `Content-Length`
+    /// header is synthesized from it unless the request already carries
+    /// `Content-Length` or `Transfer-Encoding`. A caller-supplied framing
+    /// header must agree with `content_length`; the client does not check it.
+    /// A reader that ends early fails the request with
+    /// [`ErrorKind::SendRequest`]. The body is consumed once, so the request is
+    /// never replayed. `timeout` bounds the request write plus response-header
+    /// read, as in [`Self::request_with_timeout`].
+    pub fn request_streaming<R: Read>(
+        &self,
+        request: Request<R>,
+        content_length: u64,
+        timeout: Option<Duration>,
+    ) -> Result<Response<ResponseBody>, Error> {
+        let (parts, body) = request.into_parts();
+        self.send(parts, content_length, body, timeout)
+    }
+
+    fn send(
+        &self,
+        parts: http::request::Parts,
+        content_length: u64,
+        body: impl Read,
+        timeout: Option<Duration>,
+    ) -> Result<Response<ResponseBody>, Error> {
         if matches!(timeout, Some(timeout) if timeout.is_zero()) {
             return Err(Error::new(ErrorKind::Timeout));
         }
 
-        let mut request = request;
+        let mut request = Request::from_parts(parts, ());
         let is_connect = request.method() == Method::CONNECT;
         match request.version() {
             Version::HTTP_10 | Version::HTTP_11 => {}
@@ -85,7 +122,7 @@ impl Client {
         connection
             .set_timeouts(timeout, timeout)
             .map_err(|error| Error::from_io(ErrorKind::SendRequest, error))?;
-        write_request(&mut connection, request)?;
+        write_request(&mut connection, request.into_parts().0, content_length, body)?;
         read_response(connection, head_request)
     }
 
@@ -701,12 +738,16 @@ fn connect_tcp(host: &str, port: u16, timeout: Option<Duration>) -> io::Result<T
     }))
 }
 
-fn write_request(connection: &mut Connection, request: Request<Vec<u8>>) -> Result<(), Error> {
-    let (mut parts, body) = request.into_parts();
+fn write_request(
+    connection: &mut Connection,
+    mut parts: http::request::Parts,
+    content_length: u64,
+    body: impl Read,
+) -> Result<(), Error> {
     if !parts.headers.contains_key(CONTENT_LENGTH) && !parts.headers.contains_key(TRANSFER_ENCODING)
     {
-        let value = HeaderValue::from_str(&body.len().to_string())
-            .expect("the decimal length of a Vec is a valid HTTP header value");
+        let value = HeaderValue::from_str(&content_length.to_string())
+            .expect("the decimal length of a body is a valid HTTP header value");
         parts.headers.insert(CONTENT_LENGTH, value);
     }
     // The client has no idle pool. State this explicitly so a server can
@@ -729,8 +770,20 @@ fn write_request(connection: &mut Connection, request: Request<Vec<u8>>) -> Resu
     }
     connection
         .write_all(b"\r\n")
-        .and_then(|()| connection.write_all(&body))
-        .and_then(|()| connection.flush())
+        .map_err(|error| Error::from_io(ErrorKind::SendRequest, error))?;
+    let sent = io::copy(&mut body.take(content_length), connection)
+        .map_err(|error| Error::from_io(ErrorKind::SendRequest, error))?;
+    if sent != content_length {
+        return Err(Error::with_source(
+            ErrorKind::SendRequest,
+            io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "request body ended before its declared length",
+            ),
+        ));
+    }
+    connection
+        .flush()
         .map_err(|error| Error::from_io(ErrorKind::SendRequest, error))
 }
 
@@ -1027,6 +1080,58 @@ mod tests {
         assert!(request_lower.contains(&format!("host: {address}\r\n")));
         assert!(request_lower.contains("content-length: 0\r\n"));
         assert!(request_lower.contains("connection: close\r\n"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn streams_exactly_the_declared_request_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            stream.read_to_end(&mut request).unwrap_or_default();
+            request
+        });
+
+        // The reader holds more than the declared length; only 5 bytes may be sent.
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("http://{address}/object"))
+            .body(std::io::Cursor::new(b"hello world".to_vec()))
+            .unwrap();
+        let error = Client::new()
+            .request_streaming(request, 5, Some(Duration::from_millis(200)))
+            .err()
+            .expect("the server never responds");
+        assert!(error.is_timeout());
+
+        let request = String::from_utf8(server.join().unwrap()).unwrap();
+        assert!(request.starts_with("PUT /object HTTP/1.1\r\n"));
+        assert!(request.to_ascii_lowercase().contains("content-length: 5\r\n"));
+        assert!(request.ends_with("\r\n\r\nhello"));
+    }
+
+    #[test]
+    fn short_streamed_request_body_fails() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut sink = Vec::new();
+            stream.read_to_end(&mut sink).unwrap_or_default();
+        });
+
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("http://{address}/object"))
+            .body(std::io::Cursor::new(b"abc".to_vec()))
+            .unwrap();
+        let error = Client::new()
+            .request_streaming(request, 10, None)
+            .err()
+            .expect("the reader is shorter than the declared length");
+        assert_eq!(error.kind(), ErrorKind::SendRequest);
         server.join().unwrap();
     }
 
