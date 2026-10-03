@@ -1,6 +1,6 @@
 [package]
 name = "h12tiny"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.89"
 description = "small http(s) 1 and 2 things"
@@ -30,7 +30,7 @@ futures-rustls = { version = "0.26.0", default-features = false, features = ["tl
 futures-util = { version = "0.3.34", default-features = false, features = ["async-await", "std"] }
 http = "1.5.0"
 http-body = "1.1.0"
-hyper = { package = "laputa-hyper-futures-lite", version = "=1.11.0-beta.0", default-features = false }
+hyper = { package = "laputa-hyper-futures-lite", version = "=1.11.1-beta.0", default-features = false }
 pin-project-lite = "0.2.17"
 # h12tiny builds every TLS config with `builder_with_provider`, selecting
 # Graviola explicitly. Do not enable Rustls' `custom-provider` feature: Cargo
@@ -80,12 +80,12 @@ name = "h2-reference-server"
 required-features = ["server", "http2"]
 
 [dependencies]
-h12tiny-core = { version = "0.1.0", path = "crates/h12tiny-core", optional = true, default-features = false }
-h12tiny-client = { version = "0.1.0", path = "crates/h12tiny-client", optional = true, default-features = false }
-h12tiny-client-sync = { version = "0.1.0", path = "crates/h12tiny-client-sync", optional = true, default-features = false }
-h12tiny-server = { version = "0.1.0", path = "crates/h12tiny-server", optional = true, default-features = false }
+h12tiny-core = { version = "0.1.1", path = "crates/h12tiny-core", optional = true, default-features = false }
+h12tiny-client = { version = "0.1.2", path = "crates/h12tiny-client", optional = true, default-features = false }
+h12tiny-client-sync = { version = "0.1.1", path = "crates/h12tiny-client-sync", optional = true, default-features = false }
+h12tiny-server = { version = "0.1.1", path = "crates/h12tiny-server", optional = true, default-features = false }
 h12tiny-util = { version = "0.1.0", path = "crates/h12tiny-util", optional = true, default-features = false }
-h12tiny-web = { version = "0.1.0", path = "crates/h12tiny-web", optional = true, default-features = false }
+h12tiny-web = { version = "0.1.1", path = "crates/h12tiny-web", optional = true, default-features = false }
 
 [dev-dependencies]
 async-io = { workspace = true }
