@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-io",
  "async-net",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-client"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "async-io",
  "async-net",
@@ -447,14 +447,14 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-client-normalize"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "http",
 ]
 
 [[package]]
 name = "h12tiny-client-sync"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "h12tiny-client-normalize",
  "http",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-io",
  "futures-io",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-server"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-net",
  "bytes",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-util"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-io",
  "bytes",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-web"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-io",
  "base64",

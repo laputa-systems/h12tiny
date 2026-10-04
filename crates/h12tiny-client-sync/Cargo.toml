@@ -1,6 +1,6 @@
 [package]
 name = "h12tiny-client-sync"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Blocking direct-origin HTTP/1.1 client for h12tiny"
@@ -11,7 +11,7 @@ default = []
 tls = ["dep:rustls", "dep:rustls-graviola", "dep:webpki-roots"]
 
 [dependencies]
-h12tiny-client-normalize = { version = "0.1.0", path = "../h12tiny-client-normalize" }
+h12tiny-client-normalize = { version = "0.2.0", path = "../h12tiny-client-normalize" }
 http = { workspace = true }
 rustls = { workspace = true, optional = true }
 rustls-graviola = { workspace = true, optional = true }

@@ -1,6 +1,6 @@
 [package]
 name = "h12tiny-client"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Direct-origin HTTP client for h12tiny"
@@ -19,8 +19,8 @@ futures-channel = { workspace = true }
 futures-io = { workspace = true }
 futures-rustls = { workspace = true, optional = true }
 futures-util = { workspace = true }
-h12tiny-core = { version = "0.1.1", path = "../h12tiny-core", default-features = false }
-h12tiny-client-normalize = { version = "0.1.0", path = "../h12tiny-client-normalize" }
+h12tiny-core = { version = "0.2.0", path = "../h12tiny-core", default-features = false }
+h12tiny-client-normalize = { version = "0.2.0", path = "../h12tiny-client-normalize" }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true }
