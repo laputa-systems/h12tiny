@@ -6,6 +6,7 @@ rust-version = "1.89"
 description = "small http(s) 1 and 2 things"
 license = "MIT"
 repository = "https://github.com/laputa-systems/h12tiny"
+exclude = ["scripts/bump_minor_release.sh"]
 
 [workspace]
 members = [
