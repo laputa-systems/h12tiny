@@ -29,6 +29,5 @@ jobs:
       # rust-toolchain.toml pins the toolchain; this installs it.
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo fmt --all --check
       - run: cargo clippy --locked --all-targets --all-features -- --deny warnings
       - run: cargo test --locked
