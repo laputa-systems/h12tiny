@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Small application routing adapter for h12tiny"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [features]
 default = []

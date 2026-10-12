@@ -17,7 +17,7 @@ LC_ALL=C
 export LC_ALL
 
 fail() {
-    printf '%s\n' "make bump: $*" >&2
+    printf '%s\n' "make publish: $*" >&2
     exit 1
 }
 
@@ -52,7 +52,7 @@ on_exit() {
             # contain whitespace (rejected at discovery).
             # shellcheck disable=SC2086
             if ! git reset -- $RESET_PATHS; then
-                printf '%s\n' "make bump: failed to unstage release inputs; backups remain in $backup_dir" >&2
+                printf '%s\n' "make publish: failed to unstage release inputs; backups remain in $backup_dir" >&2
                 exit 1
             fi
             restore_failed=0
@@ -66,7 +66,7 @@ on_exit() {
                 restore_failed=1
             fi
             if [ "$restore_failed" -ne 0 ]; then
-                printf '%s\n' "make bump: failed to restore release inputs; backups remain in $backup_dir" >&2
+                printf '%s\n' "make publish: failed to restore release inputs; backups remain in $backup_dir" >&2
                 exit 1
             fi
         fi

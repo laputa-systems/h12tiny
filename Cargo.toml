@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.89"
 description = "small http(s) 1 and 2 things"
 license = "MIT"
-repository = "https://github.com/laputa-systems/h12tiny"
+repository = "https://github.com/joshuarli/h12tiny"
 exclude = ["scripts/bump_minor_release.sh"]
 
 [workspace]
@@ -18,7 +18,6 @@ members = [
     "crates/h12tiny-util",
     "crates/h12tiny-web",
 ]
-resolver = "2"
 
 [workspace.dependencies]
 async-io = "2.6"

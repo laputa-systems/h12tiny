@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Direct-origin HTTP request normalization shared by h12tiny clients"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [dependencies]
 http = { workspace = true }
