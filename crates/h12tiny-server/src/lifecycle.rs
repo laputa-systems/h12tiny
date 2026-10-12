@@ -25,6 +25,12 @@ use std::task::Poll;
 /// The error delivered to the optional connection error hook.
 pub type ConnectionError = Box<dyn StdError + Send + Sync>;
 
+// Boxed future returned by `Listener::accept`; named to keep the trait signature
+// readable.
+type AcceptFuture<'a, L> = Pin<
+    Box<dyn Future<Output = io::Result<(<L as Listener>::Stream, <L as Listener>::Address)>> + Send + 'a>,
+>;
+
 /// A listener that yields runtime-neutral asynchronous streams.
 ///
 /// The associated address is retained at the transport boundary so custom
@@ -41,7 +47,7 @@ pub trait Listener {
     /// Accept one stream.
     fn accept(
         &self,
-    ) -> Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Address)>> + Send + '_>>;
+    ) -> AcceptFuture<'_, Self>;
 }
 
 impl Listener for async_net::TcpListener {
@@ -50,7 +56,7 @@ impl Listener for async_net::TcpListener {
 
     fn accept(
         &self,
-    ) -> Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Address)>> + Send + '_>> {
+    ) -> AcceptFuture<'_, Self> {
         Box::pin(async move { async_net::TcpListener::accept(self).await })
     }
 }
@@ -62,7 +68,7 @@ impl Listener for async_net::unix::UnixListener {
 
     fn accept(
         &self,
-    ) -> Pin<Box<dyn Future<Output = io::Result<(Self::Stream, Self::Address)>> + Send + '_>> {
+    ) -> AcceptFuture<'_, Self> {
         Box::pin(async move { async_net::unix::UnixListener::accept(self).await })
     }
 }

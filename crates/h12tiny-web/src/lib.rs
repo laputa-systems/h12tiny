@@ -193,7 +193,7 @@ impl IntoResponse for String {
     }
 }
 
-impl<'a> IntoResponse for &'a str {
+impl IntoResponse for &str {
     fn into_response(self) -> Response {
         self.to_owned().into_response()
     }
@@ -387,6 +387,9 @@ where
     }
 }
 
+// Boxed future returned by `FromRequest::from_request`.
+type ExtractFuture<T, R> = Pin<Box<dyn Future<Output = Result<(T, Request), R>> + Send>>;
+
 /// Request extractor trait used by handler glue.
 pub trait FromRequest<S>: Sized + Send + 'static {
     /// The response returned when extraction fails.
@@ -398,7 +401,7 @@ pub trait FromRequest<S>: Sized + Send + 'static {
         request: Request,
         state: &Option<S>,
         meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>>;
+    ) -> ExtractFuture<Self, Self::Rejection>;
 }
 
 fn empty_body() -> RequestBody {
@@ -435,7 +438,7 @@ where
         request: Request,
         state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let state = state.clone();
         Box::pin(async move {
             state.map(|state| (Self(state), request)).ok_or_else(|| {
@@ -475,7 +478,7 @@ where
         request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         Box::pin(async move {
             let (parts, body) = split_request(request);
             let value = parts.extensions.get::<T>().cloned().ok_or_else(|| {
@@ -505,7 +508,7 @@ where
         request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         Box::pin(async move {
             let (parts, body) = split_request(request);
             let value = parts.extensions.get::<T>().cloned().map(Extension);
@@ -524,7 +527,7 @@ where
         request: Request,
         _state: &Option<S>,
         meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let limit = meta.body_limit.unwrap_or(usize::MAX);
         Box::pin(async move {
             let (parts, body) = request.into_parts();
@@ -691,7 +694,7 @@ where
         request: Request,
         _state: &Option<S>,
         meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let params = meta.params.clone();
         Box::pin(async move { Ok((Self(T::from_path(&params)?), request)) })
     }
@@ -707,7 +710,7 @@ where
         request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         Box::pin(async move { Ok((request, Request::new(empty_body()))) })
     }
 }
@@ -726,7 +729,7 @@ where
         request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let query = request.uri().query().map(str::to_owned);
         Box::pin(async move { Ok((Self(query), request)) })
     }
@@ -1247,6 +1250,12 @@ impl<S> Router<S> {
 /// Lets a router be passed directly to Hyper's H1 or H2 server connection
 /// drivers. The implementation is generic over the incoming body, so routing
 /// itself remains unaware of the negotiated HTTP protocol.
+impl<S> Default for Router<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<S, B> hyper::service::Service<HttpRequest<B>> for Router<S>
 where
     S: Clone + Send + Sync + 'static,
@@ -1461,7 +1470,7 @@ where
         request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let query = request.uri().query().unwrap_or_default().to_owned();
         Box::pin(async move {
             query_as_json(&query)
@@ -1518,7 +1527,7 @@ where
         request: Request,
         _state: &Option<S>,
         meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let limit = meta.body_limit.unwrap_or(usize::MAX);
         Box::pin(async move {
             let (parts, body) = request.into_parts();
@@ -1556,7 +1565,7 @@ where
         request: Request,
         _state: &Option<S>,
         meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let limit = meta.body_limit.unwrap_or(usize::MAX);
         Box::pin(async move {
             let (parts, body) = request.into_parts();
@@ -1970,6 +1979,13 @@ impl Cors {
     }
 }
 
+#[cfg(feature = "cors")]
+impl Default for Cors {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(feature = "upgrade")]
 /// Raw HTTP upgrade future captured from a request.
 pub struct HttpUpgrade {
@@ -1988,7 +2004,7 @@ where
         mut request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         let on_upgrade = h12tiny_server::upgrade::on(&mut request);
         Box::pin(async move { Ok((Self { on_upgrade }, request)) })
     }
@@ -2137,7 +2153,7 @@ where
         mut request: Request,
         _state: &Option<S>,
         _meta: &RequestMeta,
-    ) -> Pin<Box<dyn Future<Output = Result<(Self, Request), Self::Rejection>> + Send>> {
+    ) -> ExtractFuture<Self, Self::Rejection> {
         Box::pin(async move {
             let upgrade = Self::try_from_request(&mut request)
                 .map_err(|error| Rejection::new(StatusCode::BAD_REQUEST, error.to_string()))?;

@@ -448,9 +448,9 @@ impl<E> Builder<E> {
                 #[cfg(feature = "http2")]
                 {
                     let builder = self.clone().http2_only();
-                    return Ok(builder
+                    Ok(builder
                         .serve_connection(h12tiny_core::io::FuturesIo::new(io), service)
-                        .into_owned());
+                        .into_owned())
                 }
                 #[cfg(not(feature = "http2"))]
                 {
@@ -462,9 +462,9 @@ impl<E> Builder<E> {
                 #[cfg(feature = "http1")]
                 {
                     let builder = self.clone().http1_only();
-                    return Ok(builder
+                    Ok(builder
                         .serve_connection(h12tiny_core::io::FuturesIo::new(io), service)
-                        .into_owned());
+                        .into_owned())
                 }
                 #[cfg(not(feature = "http1"))]
                 {

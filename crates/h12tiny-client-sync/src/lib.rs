@@ -179,7 +179,7 @@ impl Client {
             .set_read_timeout(None)
             .and_then(|()| stream.set_write_timeout(None))
             .map_err(|error| Error::from_io(ErrorKind::Tls, error))?;
-        Ok(Connection::Tls(rustls::StreamOwned::new(session, stream)))
+        Ok(Connection::Tls(Box::new(rustls::StreamOwned::new(session, stream))))
     }
 
     #[cfg(not(feature = "tls"))]
@@ -647,7 +647,7 @@ impl fmt::Debug for ResponseBody {
 enum Connection {
     Tcp(TcpStream),
     #[cfg(feature = "tls")]
-    Tls(rustls::StreamOwned<rustls::ClientConnection, TcpStream>),
+    Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
 }
 
 impl Connection {
@@ -719,8 +719,8 @@ enum BodyMode {
 
 fn connect_tcp(host: &str, port: u16, timeout: Option<Duration>) -> io::Result<TcpStream> {
     let mut last_error = None;
-    let mut addresses = (host, port).to_socket_addrs()?;
-    while let Some(address) = addresses.next() {
+    let addresses = (host, port).to_socket_addrs()?;
+    for address in addresses {
         let result = match timeout {
             Some(timeout) => TcpStream::connect_timeout(&address, timeout),
             None => TcpStream::connect(address),

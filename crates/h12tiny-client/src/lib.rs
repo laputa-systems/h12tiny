@@ -637,7 +637,7 @@ where
                             origin: normalize::pool_key_origin(&key),
                         });
                     }
-                    request = returned_request;
+                    request = *returned_request;
                     *request.uri_mut() = absolute_uri.clone();
                 }
             }
@@ -684,14 +684,14 @@ where
             Err(mut error) => {
                 if let Some(request) = error.take_message() {
                     return Err(TrySendError::Retryable {
-                        request,
+                        request: Box::new(request),
                         reused: pooled.is_reused(),
-                        error: Error::with_source(ErrorKind::Canceled, error.into_error()),
+                        error: Error::with_source(ErrorKind::Canceled, (*error).into_error()),
                     });
                 }
                 return Err(TrySendError::Final(Error::with_source(
                     ErrorKind::SendRequest,
-                    error.into_error(),
+                    (*error).into_error(),
                 )));
             }
         };
@@ -846,10 +846,10 @@ where
                         .ready()
                         .await
                         .map_err(|error| Error::with_source(ErrorKind::Handshake, error))?;
-                    return Ok(PoolClient {
+                    Ok(PoolClient {
                         sender: Sender::Http1(sender),
                         connection_info,
-                    });
+                    })
                 }
                 #[cfg(not(feature = "http1"))]
                 {
@@ -872,10 +872,10 @@ where
                         .ready()
                         .await
                         .map_err(|error| Error::with_source(ErrorKind::Handshake, error))?;
-                    return Ok(PoolClient {
+                    Ok(PoolClient {
                         sender: Sender::Http2(sender),
                         connection_info,
-                    });
+                    })
                 }
                 #[cfg(not(feature = "http2"))]
                 {
@@ -911,7 +911,7 @@ impl<B> fmt::Debug for Client<B> {
 
 enum TrySendError<B> {
     Retryable {
-        request: Request<B>,
+        request: Box<Request<B>>,
         error: Error,
         reused: bool,
     },
@@ -978,12 +978,12 @@ where
     async fn try_send_request(
         &mut self,
         request: Request<B>,
-    ) -> Result<Response<Incoming>, hyper::client::conn::TrySendError<Request<B>>> {
+    ) -> Result<Response<Incoming>, Box<hyper::client::conn::TrySendError<Request<B>>>> {
         match &mut self.sender {
             #[cfg(feature = "http1")]
-            Sender::Http1(sender) => sender.try_send_request(request).await,
+            Sender::Http1(sender) => sender.try_send_request(request).await.map_err(Box::new),
             #[cfg(feature = "http2")]
-            Sender::Http2(sender) => sender.try_send_request(request).await,
+            Sender::Http2(sender) => sender.try_send_request(request).await.map_err(Box::new),
         }
     }
 }

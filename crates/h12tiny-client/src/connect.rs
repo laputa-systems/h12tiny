@@ -478,7 +478,7 @@ impl Default for Connector {
     fn default() -> Self {
         #[cfg(feature = "tls")]
         {
-            return Self::with_tls_config(default_tls_config());
+            Self::with_tls_config(default_tls_config())
         }
         #[cfg(not(feature = "tls"))]
         {
@@ -826,7 +826,7 @@ async fn connect_resolved_addresses(
     let mut attempts = FuturesUnordered::<Attempt>::new();
     attempts.push(Box::pin(Async::<StdTcpStream>::connect(first)));
 
-    while let Some(next_address) = addresses.next() {
+    for next_address in addresses {
         let next_attempt = attempts.next();
         let sleep = timer.sleep(happy_eyeballs_timeout.expect("checked above"));
         match future::select(next_attempt, sleep).await {
