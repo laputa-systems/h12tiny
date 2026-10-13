@@ -1,7 +1,6 @@
-# Interoperability and load tools
+# Interoperability and benchmark tools
 
-The examples are deliberately small and use only this repository's existing
-dependencies. Start the deterministic endpoint server in one terminal:
+Start the deterministic endpoint server in one terminal:
 
 ```sh
 cargo run --release --features server,http1,http2,tls --example interop-server
@@ -45,10 +44,10 @@ bits, `20` connection bits) so results do not silently represent an
 effectively unlimited-flow-control workload. See `--help` on either script
 for all environment controls.
 
-For a same-runtime H2 attribution check, start the direct-Hyper reference in a
-second terminal. It shares `interop-server`'s listener, futures-I/O adapter,
-executor, service, headers, and `/0`/`/1k`/`/64k` bodies, but calls Hyper's H2
-builder without h12tiny-server's auto protocol selection or lifecycle layer:
+For an H2 endpoint-layer comparison, start the direct-Hyper reference on its
+separate listener (port 3001 by default). It shares the service, executor, and
+futures-I/O adapter with `interop-server`, but calls Hyper's H2 builder without
+h12tiny-server's auto protocol selection or lifecycle layer:
 
 ```sh
 cargo run --release --features server,http2 --example h2-reference-server
@@ -58,38 +57,12 @@ Then set `H12TINY_REFERENCE_HTTP2_URL=http://127.0.0.1:3001/64k` when running
 `bench.sh`. Treat this as endpoint-layer attribution, not an upstream Tokio or
 cross-language comparison.
 
-`client-load` defaults to no retained diagnostics, so its throughput and RSS
-measurements do not accumulate a lifecycle event per request. Pass
-`--debug-events` only when a diagnostic run needs event-derived
+`client-load` defaults to no retained diagnostics, so it does not retain a
+lifecycle event per request. Pass `--debug-events` when a diagnostic run needs
+event-derived
 `tcp_connections`, `tls_handshakes`, `h1_connections`, and `h2_sessions`.
 Those observations are single-run diagnostics, not a benchmark score or a
 replacement for server-side metrics.
 
-## Dependency policy check
-
-Run the normal-graph policy check with:
-
-```sh
-sh scripts/check-normal-dependencies.sh
-```
-
-With no arguments the check audits the facade's `full` normal graph; pass a
-different Cargo feature selection to inspect a narrower build. It rejects the
-forbidden transport/framework packages from the enabled graph. `libc` is
-intentionally allowed, whether it is direct or transitive, because platform
-support may require it. Serde is permitted only as an explicit util/web
-convenience feature and is separately excluded from the minimal component
-graphs by `check-features.sh`. Dev dependencies are not inspected.
-
-## Component feature isolation
-
-The facade defaults to no roles or protocols. Run the complete component and
-facade feature/dependency contract with:
-
-```sh
-scripts/check-features.sh
-```
-
-This verifies direct H1/H2 client and server configurations, the facade
-forwarding combinations, and required graph absences such as H2 in an H1-only
-client or JSON in `h12tiny-util` without its `json` feature.
+Build, feature-isolation, dependency, and test commands are listed in
+[`docs/verification.md`](../docs/verification.md).

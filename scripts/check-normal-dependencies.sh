@@ -15,12 +15,10 @@ fi
 
 tree=$(cargo tree --manifest-path "$manifest" -e normal --prefix none "$@")
 
-# Keep this list synchronized with AGENTS.md. Names are matched as Cargo package
-# names (the first whitespace-delimited field), not as substrings, so a package
-# such as `tokio-metrics` cannot hide a direct `tokio` match and unrelated names
-# do not produce false positives. `libc` is intentionally absent: both direct
-# and transitive libc are permitted. Serde is also absent because it is an
-# explicitly optional util/web feature, never a core transport dependency.
+# Match Cargo package names rather than substrings so `tokio-metrics` cannot
+# hide a direct `tokio` package and unrelated names do not trigger a match.
+# `libc` is permitted directly and transitively. Optional serialization
+# dependencies belong to explicit util/web features.
 forbidden='\
 tokio
 tokio-util
