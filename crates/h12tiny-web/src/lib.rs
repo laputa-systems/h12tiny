@@ -21,7 +21,7 @@ pub use bytes::Bytes;
 use futures_util::future::{select, Either};
 pub use http::header::{HeaderMap, HeaderValue};
 #[cfg(feature = "cors")]
-use http::header::{HeaderName, ORIGIN};
+use http::header::{HeaderName, ORIGIN, VARY};
 use http::header::{ALLOW, CONTENT_TYPE};
 pub use http::{Method, StatusCode, Version};
 use http::{Request as HttpRequest, Response as HttpResponse};
@@ -905,6 +905,13 @@ impl<S> MethodRouter<S> {
     fn merge(&mut self, other: Self) {
         self.methods.extend(other.methods);
     }
+
+    fn allow_header_value(&self) -> HeaderValue {
+        let mut methods: Vec<_> = self.methods.keys().map(Method::as_str).collect();
+        methods.sort_unstable();
+        HeaderValue::from_str(&methods.join(", "))
+            .expect("HTTP method names form a valid Allow header")
+    }
 }
 
 fn method_router<S, T, F>(method: Method, handler: F) -> MethodRouter<S>
@@ -1008,14 +1015,27 @@ impl<S> Clone for RouteEntry<S> {
     }
 }
 
-/// A small path-and-method router.
-pub struct Router<S = ()> {
+struct RouterRoutes<S> {
     routes: Vec<(String, RouteEntry<S>)>,
     matcher: MatchRouter<usize>,
+}
+
+impl<S> Clone for RouterRoutes<S> {
+    fn clone(&self) -> Self {
+        Self {
+            routes: self.routes.clone(),
+            matcher: self.matcher.clone(),
+        }
+    }
+}
+
+/// A small path-and-method router.
+pub struct Router<S = ()> {
+    routes: Arc<RouterRoutes<S>>,
     fallback: Option<Endpoint<S>>,
     state: Option<S>,
     #[cfg(feature = "cors")]
-    cors: Option<Cors>,
+    cors: Option<Arc<Cors>>,
 }
 
 impl<S> Clone for Router<S>
@@ -1024,8 +1044,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            routes: self.routes.clone(),
-            matcher: build_matcher(&self.routes),
+            routes: Arc::clone(&self.routes),
             fallback: self.fallback.clone(),
             state: self.state.clone(),
             #[cfg(feature = "cors")]
@@ -1034,23 +1053,15 @@ where
     }
 }
 
-fn build_matcher<S>(routes: &[(String, RouteEntry<S>)]) -> MatchRouter<usize> {
-    let mut matcher = MatchRouter::new();
-    for (index, (path, _)) in routes.iter().enumerate() {
-        matcher
-            .insert(path, index)
-            .unwrap_or_else(|error| panic!("invalid or conflicting route {path:?}: {error}"));
-    }
-    matcher
-}
-
 impl<S> Router<S> {
     /// Create an empty router. State is optional so stateless handlers can be
     /// used directly, while stateful routers call [`Router::with_state`].
     pub fn new() -> Self {
         Self {
-            routes: Vec::new(),
-            matcher: MatchRouter::new(),
+            routes: Arc::new(RouterRoutes {
+                routes: Vec::new(),
+                matcher: MatchRouter::new(),
+            }),
             fallback: None,
             state: None,
             #[cfg(feature = "cors")]
@@ -1066,11 +1077,16 @@ impl<S> Router<S> {
 
     /// Add or extend a path route.
     pub fn route(mut self, path: &str, methods: MethodRouter<S>) -> Self {
-        if let Some((_, entry)) = self.routes.iter_mut().find(|(route, _)| route == path) {
+        let routes = Arc::make_mut(&mut self.routes);
+        if let Some((_, entry)) = routes.routes.iter_mut().find(|(route, _)| route == path) {
             entry.methods.merge(methods);
         } else {
-            self.routes.push((path.to_owned(), RouteEntry { methods }));
-            self.matcher = build_matcher(&self.routes);
+            let index = routes.routes.len();
+            routes
+                .matcher
+                .insert(path, index)
+                .unwrap_or_else(|error| panic!("invalid or conflicting route {path:?}: {error}"));
+            routes.routes.push((path.to_owned(), RouteEntry { methods }));
         }
         self
     }
@@ -1082,7 +1098,7 @@ impl<S> Router<S> {
     /// deadline explicit in the route tree. Streaming routes should be built
     /// outside this subtree (or call [`Router::without_timeout`]).
     pub fn timeout(mut self, timeout: Duration) -> Self {
-        for (_, entry) in &mut self.routes {
+        for (_, entry) in &mut Arc::make_mut(&mut self.routes).routes {
             entry.methods = entry.methods.clone().timeout(timeout);
         }
         self
@@ -1090,7 +1106,7 @@ impl<S> Router<S> {
 
     /// Remove handler deadlines from every currently configured route.
     pub fn without_timeout(mut self) -> Self {
-        for (_, entry) in &mut self.routes {
+        for (_, entry) in &mut Arc::make_mut(&mut self.routes).routes {
             entry.methods = entry.methods.clone().without_timeout();
         }
         self
@@ -1101,14 +1117,14 @@ impl<S> Router<S> {
     /// Use [`MethodRouter::body_limit`] when only one method on a route needs
     /// the limit.
     pub fn body_limit(mut self, limit: usize) -> Self {
-        for (_, entry) in &mut self.routes {
+        for (_, entry) in &mut Arc::make_mut(&mut self.routes).routes {
             entry.methods = entry.methods.clone().body_limit(limit);
         }
         self
     }
 
-    /// Add a fallback handler used when no path matches or a path has no
-    /// handler for the request method.
+    /// Add a fallback handler used when no path matches. A matched path with
+    /// no handler for the request method returns a method-not-allowed response.
     pub fn fallback<T, F>(mut self, handler: F) -> Self
     where
         F: Handler<T, S>,
@@ -1128,7 +1144,7 @@ impl<S> Router<S> {
 
     /// Prefix every route in `nested` and add it to this router.
     pub fn nest(mut self, prefix: &str, nested: Router<S>) -> Self {
-        for (path, entry) in nested.routes {
+        for (path, entry) in Arc::unwrap_or_clone(nested.routes).routes {
             let nested_root = path == "/";
             let path = join_paths(prefix, &path);
             // A nested root represents the collection resource itself. APIs
@@ -1152,7 +1168,7 @@ impl<S> Router<S> {
 
     /// Merge routes from another router with the same state type.
     pub fn merge(mut self, other: Router<S>) -> Self {
-        for (path, entry) in other.routes {
+        for (path, entry) in Arc::unwrap_or_clone(other.routes).routes {
             self = self.route(&path, entry.methods);
         }
         if self.fallback.is_none() {
@@ -1167,7 +1183,7 @@ impl<S> Router<S> {
     #[cfg(feature = "cors")]
     /// Attach a structural CORS policy.
     pub fn cors(mut self, cors: Cors) -> Self {
-        self.cors = Some(cors);
+        self.cors = Some(Arc::new(cors));
         self
     }
 
@@ -1191,16 +1207,32 @@ impl<S> Router<S> {
         let request_origin = request.headers().get(ORIGIN).cloned();
         #[cfg(feature = "cors")]
         if let Some(cors) = &self.cors {
-            if request.method() == Method::OPTIONS && request.headers().contains_key(ORIGIN) {
-                let response = cors.preflight_response(request_origin.as_ref());
-                return Box::pin(async move { response });
+            if request.method() == Method::OPTIONS
+                && request_origin.is_some()
+                && request.headers().contains_key("access-control-request-method")
+            {
+                let cors = cors.clone();
+                let allow = self
+                    .routes
+                    .matcher
+                    .at(request.uri().path())
+                    .ok()
+                    .map(|matched| {
+                        self.routes.routes[*matched.value]
+                            .1
+                            .methods
+                            .allow_header_value()
+                    });
+                return Box::pin(async move {
+                    cors.preflight_response(request_origin.as_ref(), allow)
+                });
             }
         }
 
         let path = request.uri().path();
         let method = request.method().clone();
-        let matched = self.matcher.at(path).ok();
-        let (endpoint, params) = match matched {
+        let matched = self.routes.matcher.at(path).ok();
+        let future: HandlerFuture = match matched {
             Some(matched) => {
                 let params = RouteParams(
                     matched
@@ -1209,33 +1241,29 @@ impl<S> Router<S> {
                         .map(|(name, value)| (name.to_owned(), value.to_owned()))
                         .collect(),
                 );
-                let entry = &self.routes[*matched.value];
+                let entry = &self.routes.routes[*matched.value];
                 match entry.1.methods.methods.get(&method) {
-                    Some(endpoint) => (Some(endpoint), params),
+                    Some(endpoint) => endpoint.call(request, self.state.clone(), params),
                     None => {
-                        return Box::pin(async move {
+                        let allow = entry.1.methods.allow_header_value();
+                        Box::pin(async move {
                             let mut response = response_with_body(
                                 StatusCode::METHOD_NOT_ALLOWED,
                                 "method not allowed",
                             );
-                            response.headers_mut().insert(
-                                ALLOW,
-                                HeaderValue::from_static(
-                                    "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS",
-                                ),
-                            );
+                            response.headers_mut().insert(ALLOW, allow);
                             response
                         })
                     }
                 }
             }
-            None => (self.fallback.as_ref(), RouteParams::default()),
+            None => match self.fallback.as_ref() {
+                Some(endpoint) => {
+                    endpoint.call(request, self.state.clone(), RouteParams::default())
+                }
+                None => Box::pin(async { response_with_body(StatusCode::NOT_FOUND, "not found") }),
+            },
         };
-        let Some(endpoint) = endpoint else {
-            return Box::pin(async { response_with_body(StatusCode::NOT_FOUND, "not found") });
-        };
-        let state = self.state.clone();
-        let future = endpoint.call(request, state, params);
         #[cfg(feature = "cors")]
         if let Some(cors) = &self.cors {
             let cors = cors.clone();
@@ -1602,6 +1630,36 @@ pub struct Event {
     comments: Vec<String>,
 }
 
+/// A value contained a character that is invalid in its SSE field.
+#[cfg(feature = "sse")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventFieldError {
+    /// Event types cannot contain carriage returns or line feeds.
+    EventContainsLineBreak,
+    /// Event identifiers cannot contain carriage returns or line feeds.
+    IdContainsLineBreak,
+    /// Event identifiers cannot contain NUL.
+    IdContainsNul,
+}
+
+#[cfg(feature = "sse")]
+impl fmt::Display for EventFieldError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EventContainsLineBreak => {
+                formatter.write_str("SSE event type cannot contain a line break")
+            }
+            Self::IdContainsLineBreak => {
+                formatter.write_str("SSE event identifier cannot contain a line break")
+            }
+            Self::IdContainsNul => formatter.write_str("SSE event identifier cannot contain NUL"),
+        }
+    }
+}
+
+#[cfg(feature = "sse")]
+impl StdError for EventFieldError {}
+
 #[cfg(feature = "sse")]
 impl Event {
     /// Construct an empty event.
@@ -1609,22 +1667,39 @@ impl Event {
         Self::default()
     }
 
-    /// Set event data. Newlines are framed as multiple `data:` fields.
+    /// Set event data. Line breaks are framed as multiple `data:` fields.
     pub fn data(mut self, data: impl Into<String>) -> Self {
         self.data = Some(data.into());
         self
     }
 
     /// Set the event type.
-    pub fn event(mut self, event: impl Into<String>) -> Self {
-        self.event = Some(event.into());
-        self
+    ///
+    /// The value cannot contain a carriage return or line feed, which would
+    /// otherwise add another field to the event stream.
+    pub fn event(mut self, event: impl Into<String>) -> Result<Self, EventFieldError> {
+        let event = event.into();
+        if event.contains(['\r', '\n']) {
+            return Err(EventFieldError::EventContainsLineBreak);
+        }
+        self.event = Some(event);
+        Ok(self)
     }
 
     /// Set the event identifier.
-    pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
+    ///
+    /// The value cannot contain a carriage return, line feed, or NUL because
+    /// those characters have special meaning to SSE clients.
+    pub fn id(mut self, id: impl Into<String>) -> Result<Self, EventFieldError> {
+        let id = id.into();
+        if id.contains(['\r', '\n']) {
+            return Err(EventFieldError::IdContainsLineBreak);
+        }
+        if id.contains('\0') {
+            return Err(EventFieldError::IdContainsNul);
+        }
+        self.id = Some(id);
+        Ok(self)
     }
 
     /// Set the reconnection delay in milliseconds.
@@ -1656,11 +1731,26 @@ impl Event {
             output.push('\n');
         }
         if let Some(data) = &self.data {
-            for line in data.split('\n') {
-                output.push_str("data: ");
-                output.push_str(line);
-                output.push('\n');
+            let bytes = data.as_bytes();
+            let mut line_start = 0;
+            let mut index = 0;
+            while index < bytes.len() {
+                if matches!(bytes[index], b'\r' | b'\n') {
+                    output.push_str("data: ");
+                    output.push_str(&data[line_start..index]);
+                    output.push('\n');
+                    if bytes[index] == b'\r'
+                        && bytes.get(index + 1).is_some_and(|byte| *byte == b'\n')
+                    {
+                        index += 1;
+                    }
+                    line_start = index + 1;
+                }
+                index += 1;
             }
+            output.push_str("data: ");
+            output.push_str(&data[line_start..]);
+            output.push('\n');
         }
         if let Some(event) = &self.event {
             output.push_str("event: ");
@@ -1940,9 +2030,15 @@ impl Cors {
             .any(|allowed| allowed == "*" || allowed == origin)
     }
 
-    fn preflight_response(&self, origin: Option<&HeaderValue>) -> Response {
+    fn preflight_response(
+        &self,
+        origin: Option<&HeaderValue>,
+        allow: Option<HeaderValue>,
+    ) -> Response {
         let mut response = StatusCode::NO_CONTENT.into_response();
-        response.headers_mut().insert(ALLOW, self.methods.clone());
+        if let Some(allow) = allow {
+            response.headers_mut().insert(ALLOW, allow);
+        }
         response.headers_mut().insert(
             HeaderName::from_static("access-control-allow-methods"),
             self.methods.clone(),
@@ -1956,11 +2052,8 @@ impl Cors {
                 HeaderName::from_static("access-control-allow-origin"),
                 origin.clone(),
             );
-            response.headers_mut().insert(
-                HeaderName::from_static("vary"),
-                HeaderValue::from_static("Origin"),
-            );
         }
+        vary_on_origin(response.headers_mut());
         response
     }
 
@@ -1970,12 +2063,22 @@ impl Cors {
                 HeaderName::from_static("access-control-allow-origin"),
                 origin.clone(),
             );
-            response.headers_mut().insert(
-                HeaderName::from_static("vary"),
-                HeaderValue::from_static("Origin"),
-            );
         }
+        vary_on_origin(response.headers_mut());
         response
+    }
+}
+
+#[cfg(feature = "cors")]
+fn vary_on_origin(headers: &mut HeaderMap) {
+    let already_varies_by_origin = headers.get_all(VARY).iter().any(|value| {
+        value.as_bytes().split(|byte| *byte == b',').any(|token| {
+            let token = token.trim_ascii();
+            token == b"*" || token.eq_ignore_ascii_case(b"origin")
+        })
+    });
+    if !already_varies_by_origin {
+        headers.append(VARY, HeaderValue::from_static("Origin"));
     }
 }
 
@@ -2526,15 +2629,192 @@ mod tests {
     fn sse_frames_standard_fields() {
         let event = Event::new()
             .event("message")
+            .unwrap()
             .id("1")
+            .unwrap()
             .retry(5000)
-            .data("one\ntwo");
+            .data("one\r\ntwo\rlast\n");
         assert_eq!(
             &event.encode()[..],
-            b"data: one\ndata: two\nevent: message\nid: 1\nretry: 5000\n\n"
+            b"data: one\ndata: two\ndata: last\ndata: \nevent: message\nid: 1\nretry: 5000\n\n"
         );
         let response = Sse::new(futures_util::stream::iter(vec![event])).into_response();
         assert_eq!(response.headers()[CONTENT_TYPE], "text/event-stream");
+    }
+
+    #[cfg(feature = "sse")]
+    #[test]
+    fn sse_rejects_line_breaks_and_nul_in_protocol_fields() {
+        assert_eq!(
+            Event::new().event("message\r\nevent: injected"),
+            Err(EventFieldError::EventContainsLineBreak)
+        );
+        assert_eq!(
+            Event::new().id("1\nid: injected"),
+            Err(EventFieldError::IdContainsLineBreak)
+        );
+        assert_eq!(
+            Event::new().id("1\0other"),
+            Err(EventFieldError::IdContainsNul)
+        );
+    }
+
+    #[cfg(feature = "cors")]
+    fn response_for<S: Clone + Send + Sync + 'static>(
+        router: &Router<S>,
+        method: Method,
+        path: &str,
+        origin: Option<&str>,
+        preflight_method: Option<&str>,
+    ) -> Response {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(origin) = origin {
+            request = request.header(ORIGIN, origin);
+        }
+        if let Some(method) = preflight_method {
+            request = request.header("access-control-request-method", method);
+        }
+        block_on(router.call(request.body(h12tiny_util::empty_body()).unwrap()))
+    }
+
+    #[cfg(feature = "cors")]
+    #[test]
+    fn cors_preserves_vary_values_and_varies_on_origin_for_every_origin() {
+        let mut headers = HeaderMap::new();
+        headers.append(http::header::VARY, HeaderValue::from_static("Accept-Encoding"));
+        headers.append(http::header::VARY, HeaderValue::from_static("X-Client-Hint"));
+        let router = Router::new()
+            .route(
+                "/vary",
+                get(move || {
+                    let headers = headers.clone();
+                    async move { (headers, "ok") }
+                }),
+            )
+            .cors(Cors::new().allow_origin("https://allowed.example"));
+
+        let response = response_for(
+            &router,
+            Method::GET,
+            "/vary",
+            Some("https://allowed.example"),
+            None,
+        );
+        assert_eq!(response.headers().get_all(http::header::VARY).iter().count(), 3);
+        assert_eq!(
+            response.headers()["access-control-allow-origin"],
+            "https://allowed.example"
+        );
+
+        let response = response_for(
+            &router,
+            Method::GET,
+            "/vary",
+            Some("https://blocked.example"),
+            None,
+        );
+        assert_eq!(response.headers().get_all(http::header::VARY).iter().count(), 3);
+        assert!(response.headers().get("access-control-allow-origin").is_none());
+
+        let response = response_for(&router, Method::GET, "/vary", None, None);
+        assert_eq!(response.headers().get_all(http::header::VARY).iter().count(), 3);
+    }
+
+    #[cfg(feature = "cors")]
+    #[test]
+    fn cors_does_not_duplicate_origin_or_append_it_after_vary_wildcard() {
+        let mut origin_headers = HeaderMap::new();
+        origin_headers.insert(
+            http::header::VARY,
+            HeaderValue::from_static("Accept-Encoding, oRiGiN"),
+        );
+        let with_origin = Router::new()
+            .route(
+                "/vary",
+                get(move || {
+                    let headers = origin_headers.clone();
+                    async move { (headers, "ok") }
+                }),
+            )
+            .cors(Cors::new());
+        let response = response_for(&with_origin, Method::GET, "/vary", None, None);
+        assert_eq!(response.headers().get_all(http::header::VARY).iter().count(), 1);
+        assert_eq!(response.headers()[http::header::VARY], "Accept-Encoding, oRiGiN");
+
+        let mut wildcard_headers = HeaderMap::new();
+        wildcard_headers.insert(http::header::VARY, HeaderValue::from_static("*"));
+        let with_wildcard = Router::new()
+            .route(
+                "/vary",
+                get(move || {
+                    let headers = wildcard_headers.clone();
+                    async move { (headers, "ok") }
+                }),
+            )
+            .cors(Cors::new());
+        let response = response_for(&with_wildcard, Method::GET, "/vary", None, None);
+        assert_eq!(response.headers().get_all(http::header::VARY).iter().count(), 1);
+        assert_eq!(response.headers()[http::header::VARY], "*");
+    }
+
+    #[cfg(feature = "cors")]
+    #[test]
+    fn cors_only_treats_options_with_requested_method_as_preflight_and_decorates_errors() {
+        let router = Router::new()
+            .route("/resource", get(|| async { "get" }))
+            .route("/resource", options(|| async { "ordinary options" }))
+            .cors(Cors::new().allow_origin("https://allowed.example"));
+
+        let response = response_for(
+            &router,
+            Method::OPTIONS,
+            "/resource",
+            Some("https://allowed.example"),
+            None,
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("access-control-allow-methods").is_none());
+        assert_eq!(response.headers()["access-control-allow-origin"], "https://allowed.example");
+
+        let response = response_for(
+            &router,
+            Method::OPTIONS,
+            "/resource",
+            Some("https://allowed.example"),
+            Some("GET"),
+        );
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()[ALLOW], "GET, OPTIONS");
+        assert_eq!(response.headers()["access-control-allow-origin"], "https://allowed.example");
+
+        let missing = response_for(&router, Method::GET, "/missing", None, None);
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing.headers()[http::header::VARY], "Origin");
+
+        let wrong_method = response_for(
+            &router,
+            Method::POST,
+            "/resource",
+            Some("https://allowed.example"),
+            None,
+        );
+        assert_eq!(wrong_method.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(wrong_method.headers()["access-control-allow-origin"], "https://allowed.example");
+        assert_eq!(wrong_method.headers()[http::header::VARY], "Origin");
+    }
+
+    #[test]
+    fn method_not_allowed_lists_only_configured_methods_in_stable_order() {
+        let router = Router::new()
+            .route("/resource", post(|| async { "post" }))
+            .route("/resource", get(|| async { "get" }));
+        let response = block_on(router.call(
+            Request::delete("/resource")
+                .body(h12tiny_util::empty_body())
+                .unwrap(),
+        ));
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.headers()[ALLOW], "GET, POST");
     }
 
     #[cfg(feature = "sse")]

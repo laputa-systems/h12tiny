@@ -66,6 +66,7 @@ pub enum ErrorKind {
     UnsupportedMethod,
     UnsupportedVersion,
     AbsoluteUriRequired,
+    InvalidPort,
     ProtocolUnavailable,
 }
 
@@ -103,6 +104,7 @@ impl fmt::Display for Error {
             ErrorKind::UnsupportedMethod => "request method is unsupported for this HTTP version",
             ErrorKind::UnsupportedVersion => "request HTTP version is unsupported",
             ErrorKind::AbsoluteUriRequired => "client requests require an absolute URI",
+            ErrorKind::InvalidPort => "request URI contains an invalid explicit port",
             ErrorKind::ProtocolUnavailable => "the selected protocol was not enabled in this build",
         })
     }
@@ -600,9 +602,12 @@ where
         let key = match normalize::extract_pool_key(request.uri_mut(), is_connect) {
             Ok(key) => key,
             Err(error) => {
-                debug_assert_eq!(error, normalize::Error::AbsoluteUriRequired);
+                let kind = match error {
+                    normalize::Error::AbsoluteUriRequired => ErrorKind::AbsoluteUriRequired,
+                    normalize::Error::InvalidPort => ErrorKind::InvalidPort,
+                };
                 return ResponseFuture::error(Error::with_source(
-                    ErrorKind::AbsoluteUriRequired,
+                    kind,
                     error,
                 ));
             }
@@ -746,8 +751,11 @@ where
             Either::Left((Err(error), connect)) if error.is_cancellation() => {
                 connect.await.map_err(ConnectionError::Final)
             }
+            Either::Left((Err(CheckoutError::NoLongerWanted), _)) => {
+                Err(ConnectionError::Retry)
+            }
             Either::Right((Err(error), checkout)) if error.kind() == ErrorKind::Canceled => {
-                match checkout.await {
+                match checkout.wait_for_capacity().await {
                     Ok(pooled) => Ok(pooled),
                     Err(CheckoutError::ClosedValue | CheckoutError::NoLongerWanted) => {
                         Err(ConnectionError::Retry)
@@ -1055,7 +1063,7 @@ impl Builder {
             config: ClientConfig {
                 retry_canceled_requests: true,
                 set_host: true,
-                protocol: PoolProtocol::Auto,
+                protocol: default_protocol(),
             },
             connector: Connector::new(),
             #[cfg(feature = "http1")]
@@ -1194,5 +1202,17 @@ impl Builder {
                 debug_events,
             ),
         }
+    }
+}
+
+fn default_protocol() -> PoolProtocol {
+    // H2-only clients use prior-knowledge H2 for plaintext origins too.
+    #[cfg(all(feature = "http2", not(feature = "http1")))]
+    {
+        PoolProtocol::Http2
+    }
+    #[cfg(not(all(feature = "http2", not(feature = "http1"))))]
+    {
+        PoolProtocol::Auto
     }
 }

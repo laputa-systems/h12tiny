@@ -2,7 +2,7 @@
 name = "h12tiny-web"
 version = "0.3.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Small application routing adapter for h12tiny"
 license = "MIT"
 

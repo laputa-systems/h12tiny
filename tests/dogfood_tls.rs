@@ -12,6 +12,7 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_net::{TcpListener, TcpStream};
@@ -19,7 +20,8 @@ use bytes::Bytes;
 use futures_rustls::TlsAcceptor;
 use futures_util::future::{self, Either};
 use h12tiny::client::{
-    Client, Connector, ErrorKind, ResponseInfo, TcpConnected, TcpDialFuture, TcpDialer,
+    Client, Connector, DialFuture, Dialer, ErrorKind, ResponseInfo, TcpConnected, TcpDialFuture,
+    TcpDialer,
 };
 use h12tiny::runtime::BoxExecutor;
 use h12tiny::server::conn::auto;
@@ -55,6 +57,24 @@ impl TcpDialer for FixtureTcpDialer {
     }
 }
 
+#[derive(Clone)]
+struct CountingDialer(Arc<AtomicUsize>);
+
+impl Dialer for CountingDialer {
+    fn connect(
+        &self,
+        _: http::Uri,
+        _: bool,
+        _: h12tiny::client::RequestOptions,
+    ) -> DialFuture {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(Box::new(std::io::Error::other("unexpected dial"))
+                as h12tiny::client::DialError)
+        })
+    }
+}
+
 impl Service<Request<Incoming>> for EchoService {
     type Response = Response<FullBody>;
     type Error = Infallible;
@@ -73,6 +93,25 @@ impl Service<Request<Incoming>> for EchoService {
                 .unwrap())
         })
     }
+}
+
+#[test]
+fn malformed_explicit_port_fails_before_a_custom_dialer_runs() {
+    smol::block_on(async {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let connector = Connector::with_dialer(CountingDialer(calls.clone()));
+        let mut builder = Client::builder(SmolExecutor);
+        builder.connector(connector);
+        let client = builder.build::<FullBody>();
+
+        let request = Request::get("http://127.0.0.1:8080x/invalid-port")
+            .body(FullBody::empty())
+            .unwrap();
+        let error = client.request(request).await.unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidPort);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    });
 }
 
 #[test]

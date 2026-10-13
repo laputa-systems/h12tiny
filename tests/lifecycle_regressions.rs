@@ -486,3 +486,73 @@ fn stale_idle_h1_socket_is_evicted_before_or_during_next_dispatch() {
         server.await;
     });
 }
+
+#[cfg(feature = "http1")]
+async fn queued_h1_request_after_slot_release(cancel_first: bool) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (first_received_tx, first_received_rx) = oneshot::channel();
+    let (release_tx, release_rx) = oneshot::channel();
+    let server = smol::spawn(async move {
+        let (mut first, _) = listener.accept().await.unwrap();
+        assert!(read_head(&mut first).await.starts_with(b"GET /first HTTP/1.1"));
+        first_received_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        if !cancel_first {
+            first.write_all(
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            ).await.unwrap();
+        }
+        drop(first);
+        let (mut second, _) = listener.accept().await.unwrap();
+        assert!(read_head(&mut second).await.starts_with(b"GET /queued HTTP/1.1"));
+        second.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            .await.unwrap();
+    });
+
+    let mut builder = Client::builder(SmolExecutor);
+    builder.pool_max_connections_per_host(1);
+    let client = builder.build::<FullBody>();
+    let first = smol::spawn(client.clone().request(
+        Request::builder().uri(format!("http://{address}/first"))
+            .body(FullBody::empty()).unwrap(),
+    ));
+    first_received_rx.await.unwrap();
+    let mut second = Box::pin(client.request(
+        Request::builder().uri(format!("http://{address}/queued"))
+            .body(FullBody::empty()).unwrap(),
+    ));
+    // Poll through checkout and the failed dial reservation before releasing
+    // the first exchange, so the second request is already parked at cap one.
+    future::poll_fn(|cx| {
+        assert!(second.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    if cancel_first {
+        assert!(first.cancel().await.is_none());
+        release_tx.send(()).unwrap();
+    } else {
+        release_tx.send(()).unwrap();
+        assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+    }
+    match future::select(second, Box::pin(async_io::Timer::after(Duration::from_secs(3)))).await {
+        Either::Left((response, _)) => {
+            assert_eq!(response.unwrap().status(), StatusCode::OK);
+        }
+        Either::Right(_) => panic!("queued H1 request remained stranded after slot release"),
+    }
+    drop(client);
+    server.await;
+}
+
+#[cfg(feature = "http1")]
+#[test]
+fn h1_cap_releases_queued_request_after_connection_close() {
+    smol::block_on(queued_h1_request_after_slot_release(false));
+}
+
+#[cfg(feature = "http1")]
+#[test]
+fn h1_cap_releases_queued_request_after_active_request_cancellation() {
+    smol::block_on(queued_h1_request_after_slot_release(true));
+}

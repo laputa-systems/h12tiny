@@ -222,8 +222,9 @@ where
     B::Data: Send + 'static,
     B::Error: Into<ConnectionError> + Send + 'static,
 {
-    /// Stops accepting when `shutdown` resolves, then gracefully drains all
-    /// active connection drivers before this future completes.
+    /// Stops accepting when `shutdown` resolves, cancels incomplete HTTP/2
+    /// setup, then gracefully drains active connection drivers before this
+    /// future completes.
     pub fn shutdown_on<F>(self, shutdown: F) -> impl Future<Output = io::Result<()>> + Send
     where
         F: Future + Send + 'static,
@@ -246,8 +247,9 @@ where
     B::Data: Send + 'static,
     B::Error: Into<ConnectionError> + Send + 'static,
 {
-    /// Stops accepting, cancels handshakes in progress, then gracefully
-    /// drains every established connection before this future completes.
+    /// Stops accepting, cancels TLS handshakes and incomplete HTTP/2 setup,
+    /// then gracefully drains every established connection before this
+    /// future completes.
     pub fn shutdown_on<F>(self, shutdown: F) -> impl Future<Output = io::Result<()>> + Send
     where
         F: Future + Send + 'static,

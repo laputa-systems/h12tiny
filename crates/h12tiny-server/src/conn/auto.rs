@@ -19,6 +19,9 @@ use std::io;
 use std::marker::PhantomData;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
+use std::sync::{Arc, atomic::AtomicUsize};
+#[cfg(feature = "http2")]
+use std::sync::atomic::Ordering;
 use std::task::{ready, Context, Poll};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -70,6 +73,8 @@ impl<T: futures_io::AsyncRead + futures_io::AsyncWrite + Unpin> TlsIo for T {}
 struct Rewind<T> {
     pre: Option<Bytes>,
     inner: T,
+    #[cfg(feature = "http2")]
+    h2_preface_remaining: Option<Arc<AtomicUsize>>,
 }
 
 impl<T> Rewind<T> {
@@ -77,6 +82,26 @@ impl<T> Rewind<T> {
         Self {
             pre: Some(pre),
             inner,
+            #[cfg(feature = "http2")]
+            h2_preface_remaining: None,
+        }
+    }
+
+    #[cfg(feature = "http2")]
+    fn track_h2_preface(mut self) -> (Self, Arc<AtomicUsize>) {
+        let remaining = Arc::new(AtomicUsize::new(H2_PREFACE.len()));
+        self.h2_preface_remaining = Some(remaining.clone());
+        (self, remaining)
+    }
+
+    #[cfg(feature = "http2")]
+    fn preface_read(&mut self, count: usize) {
+        if let Some(remaining) = &self.h2_preface_remaining {
+            let remaining_count = remaining.load(Ordering::Relaxed) - count;
+            remaining.store(remaining_count, Ordering::Relaxed);
+            if remaining_count == 0 {
+                self.h2_preface_remaining = None;
+            }
         }
     }
 }
@@ -98,8 +123,23 @@ where
                 if !prefix.is_empty() {
                     self.pre = Some(prefix);
                 }
+                #[cfg(feature = "http2")]
+                self.preface_read(copy_len);
                 return Poll::Ready(Ok(()));
             }
+        }
+        #[cfg(feature = "http2")]
+        if let Some(remaining) = &self.h2_preface_remaining {
+            // Observe only the fixed connection preface, then remove this
+            // guard so established streams read directly into Hyper's buffer.
+            let limit = remaining.load(Ordering::Relaxed).min(buf.remaining());
+            let mut bytes = [0; H2_PREFACE.len()];
+            let mut read_buf = ReadBuf::new(&mut bytes[..limit]);
+            ready!(Pin::new(&mut self.inner).poll_read(cx, read_buf.unfilled()))?;
+            let count = read_buf.filled().len();
+            buf.put_slice(read_buf.filled());
+            self.preface_read(count);
+            return Poll::Ready(Ok(()));
         }
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }
@@ -387,9 +427,11 @@ impl<E> Builder<E> {
             }
             #[cfg(feature = "http2")]
             Some(Version::H2) => {
-                let io = Rewind::new_buffered(io, Bytes::new());
+                let (io, preface_remaining) =
+                    Rewind::new_buffered(io, Bytes::new()).track_h2_preface();
                 ConnState::H2 {
                     conn: self.http2.serve_connection(io, service),
+                    preface_remaining,
                 }
             }
             #[cfg(not(feature = "http1"))]
@@ -411,8 +453,9 @@ impl<E> Builder<E> {
     }
 
     /// Binds an already-handshaken TLS stream using its negotiated ALPN
-    /// protocol. No ALPN falls back to HTTP/1.1, while an unknown value is an
-    /// endpoint-policy error rather than a best-effort protocol guess.
+    /// protocol. No ALPN selects HTTP/1.1. A protocol excluded by this
+    /// builder returns an unsupported error; unknown ALPN values return an
+    /// invalid-data error.
     ///
     /// The caller owns TLS acceptance (for example, by passing an
     /// `async_net::TcpStream` to `TlsAcceptor::accept`). This method applies
@@ -447,7 +490,14 @@ impl<E> Builder<E> {
             Some(b"h2") => {
                 #[cfg(feature = "http2")]
                 {
-                    let builder = self.clone().http2_only();
+                    if !self.is_http2_available() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            "HTTP/2 is excluded by the server builder",
+                        ).into());
+                    }
+                    let mut builder = self.clone();
+                    builder.version = Some(Version::H2);
                     Ok(builder
                         .serve_connection(h12tiny_core::io::FuturesIo::new(io), service)
                         .into_owned())
@@ -461,7 +511,14 @@ impl<E> Builder<E> {
             Some(b"http/1.1") | None => {
                 #[cfg(feature = "http1")]
                 {
-                    let builder = self.clone().http1_only();
+                    if !self.is_http1_available() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            "HTTP/1 is excluded by the server builder",
+                        ).into());
+                    }
+                    let mut builder = self.clone();
+                    builder.version = Some(Version::H1);
                     Ok(builder
                         .serve_connection(h12tiny_core::io::FuturesIo::new(io), service)
                         .into_owned())
@@ -547,7 +604,9 @@ pin_project_lite::pin_project! {
         H2 {
             #[pin]
             conn: Http2Connection<I, S, E>,
+            preface_remaining: Arc<AtomicUsize>,
         },
+        Cancelled,
         Unsupported {
             error: Option<Error>,
         },
@@ -565,19 +624,31 @@ where
     E: HttpServerConnExec<S::Future, B>,
 {
     /// Requests the connection to stop gracefully.  The returned future must
-    /// continue to be polled for the shutdown to complete.
+    /// continue to be polled for the shutdown to complete. HTTP/2 setup
+    /// without a complete connection preface is cancelled immediately;
+    /// established streams retain Hyper's graceful drain behavior.
     pub fn graceful_shutdown(self: Pin<&mut Self>) {
-        match self.project().state.project() {
+        let mut state = self.project().state;
+        match state.as_mut().project() {
             ConnStateProj::ReadVersion { read_version, .. } => read_version.cancel(),
             #[cfg(feature = "http1")]
             ConnStateProj::H1 { conn } => conn.graceful_shutdown(),
             #[cfg(not(feature = "http1"))]
             ConnStateProj::H1 { .. } => {}
             #[cfg(feature = "http2")]
-            ConnStateProj::H2 { conn } => conn.graceful_shutdown(),
+            ConnStateProj::H2 { conn, preface_remaining } => {
+                // Hyper defers shutdown during the H2 handshake. Before the
+                // preface is consumed there are no streams to drain, so drop
+                // the driver instead of waiting indefinitely for peer input.
+                if preface_remaining.load(Ordering::Relaxed) != 0 {
+                    state.set(ConnState::Cancelled);
+                } else {
+                    conn.graceful_shutdown();
+                }
+            },
             #[cfg(not(feature = "http2"))]
             ConnStateProj::H2 { .. } => {}
-            ConnStateProj::Unsupported { .. } => {}
+            ConnStateProj::Cancelled | ConnStateProj::Unsupported { .. } => {}
         }
     }
 
@@ -601,7 +672,11 @@ where
                     }),
                 },
                 ConnState::H1 { conn } => ConnState::H1 { conn },
-                ConnState::H2 { conn } => ConnState::H2 { conn },
+                ConnState::H2 { conn, preface_remaining } => ConnState::H2 {
+                    conn,
+                    preface_remaining,
+                },
+                ConnState::Cancelled => ConnState::Cancelled,
                 ConnState::Unsupported { error } => ConnState::Unsupported { error },
             },
         }
@@ -645,8 +720,9 @@ where
                         }
                         #[cfg(feature = "http2")]
                         Version::H2 => {
+                            let (io, preface_remaining) = io.track_h2_preface();
                             let conn = builder.http2.serve_connection(io, service);
-                            this.state.set(ConnState::H2 { conn });
+                            this.state.set(ConnState::H2 { conn, preface_remaining });
                         }
                         #[cfg(not(feature = "http1"))]
                         Version::H1 => this.state.set(ConnState::Unsupported {
@@ -663,9 +739,10 @@ where
                 #[cfg(not(feature = "http1"))]
                 ConnStateProj::H1 { .. } => return Poll::Ready(Err(Version::H1.unsupported())),
                 #[cfg(feature = "http2")]
-                ConnStateProj::H2 { conn } => return conn.poll(cx).map_err(Into::into),
+                ConnStateProj::H2 { conn, .. } => return conn.poll(cx).map_err(Into::into),
                 #[cfg(not(feature = "http2"))]
                 ConnStateProj::H2 { .. } => return Poll::Ready(Err(Version::H2.unsupported())),
+                ConnStateProj::Cancelled => return Poll::Ready(Ok(())),
                 ConnStateProj::Unsupported { error } => {
                     return Poll::Ready(Err(error.take().expect("unsupported error present")))
                 }

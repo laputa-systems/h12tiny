@@ -14,6 +14,8 @@ use async_net::TcpListener;
 use bytes::Bytes;
 use futures_util::future::{self, Either};
 use h12tiny::client::Client;
+#[cfg(not(feature = "http1"))]
+use h12tiny::client::{ConnectionProtocol, ResponseInfo};
 use h12tiny::io::FuturesIo;
 use h12tiny::runtime::{BoxExecutor, BoxSendFuture};
 use h12tiny::server::conn::auto;
@@ -105,6 +107,39 @@ fn h2_client_and_auto_server_interoperate_over_cleartext_prior_knowledge() {
         drop(response);
         // The pool owns an idle shared H2 sender until the client is dropped.
         // End that ownership before asserting the peer driver completes.
+        drop(client);
+        server.await;
+    });
+}
+
+#[cfg(not(feature = "http1"))]
+#[test]
+fn h2_only_build_default_uses_cleartext_prior_knowledge() {
+    smol::block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = smol::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            auto::Builder::new(BoxExecutor::new(SmolExecutor))
+                .serve_connection(FuturesIo::new(stream), EmptyService)
+                .await
+                .unwrap();
+        });
+
+        let client = Client::builder(SmolExecutor).build::<EmptyBody>();
+        let response = client
+            .request(
+                Request::builder()
+                    .uri(format!("http://{address}/default-prior-knowledge"))
+                    .body(EmptyBody)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let info = *ResponseInfo::from_response(&response).unwrap();
+        assert_eq!(info.connection().protocol(), ConnectionProtocol::Http2);
+        drop(response);
         drop(client);
         server.await;
     });

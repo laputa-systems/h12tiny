@@ -19,7 +19,8 @@ http-body-util = "0.1"
 smol = "2"
 ```
 
-`h12tiny` requires Rust 1.89; component crates require Rust 1.85. Component
+The facade, client, server, and web crates require Rust 1.89. Core,
+normalization, and body utilities require Rust 1.85. Component
 crates can be used directly when you want a smaller dependency graph; see
 [feature selection](docs/features.md).
 

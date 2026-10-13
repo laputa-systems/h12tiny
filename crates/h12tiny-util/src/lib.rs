@@ -136,6 +136,8 @@ where
 pub struct ReaderStream<R> {
     reader: R,
     chunk_size: usize,
+    // Keep the read allocation until data is available, then move it into Bytes.
+    buffer: Vec<u8>,
     done: bool,
 }
 
@@ -145,6 +147,7 @@ impl<R> ReaderStream<R> {
         Self {
             reader,
             chunk_size: 16 * 1024,
+            buffer: Vec::new(),
             done: false,
         }
     }
@@ -168,23 +171,31 @@ where
     type Item = io::Result<Bytes>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.done {
+        let this = self.as_mut().get_mut();
+        if this.done {
             return Poll::Ready(None);
         }
 
-        let mut buffer = vec![0; self.chunk_size];
-        match Pin::new(&mut self.reader).poll_read(cx, &mut buffer) {
+        if this.buffer.len() != this.chunk_size {
+            let chunk_size = this.chunk_size;
+            this.buffer.resize(chunk_size, 0);
+        }
+
+        match Pin::new(&mut this.reader).poll_read(cx, &mut this.buffer) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(0)) => {
-                self.done = true;
+                this.done = true;
+                this.buffer = Vec::new();
                 Poll::Ready(None)
             }
             Poll::Ready(Ok(read)) => {
+                let mut buffer = std::mem::take(&mut this.buffer);
                 buffer.truncate(read);
                 Poll::Ready(Some(Ok(Bytes::from(buffer))))
             }
             Poll::Ready(Err(error)) => {
-                self.done = true;
+                this.done = true;
+                this.buffer = Vec::new();
                 Poll::Ready(Some(Err(error)))
             }
         }
@@ -693,6 +704,59 @@ mod tests {
     use futures_util::stream;
     use std::convert::Infallible;
 
+    struct ControlledReader {
+        input: &'static [u8],
+        offset: usize,
+        pending_polls: usize,
+        max_read: usize,
+        poll_count: usize,
+    }
+
+    impl ControlledReader {
+        fn new(input: &'static [u8], pending_polls: usize, max_read: usize) -> Self {
+            Self {
+                input,
+                offset: 0,
+                pending_polls,
+                max_read,
+                poll_count: 0,
+            }
+        }
+    }
+
+    impl AsyncRead for ControlledReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buffer: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            self.poll_count += 1;
+            if self.pending_polls > 0 {
+                self.pending_polls -= 1;
+                return Poll::Pending;
+            }
+
+            if self.offset == self.input.len() {
+                return Poll::Ready(Ok(0));
+            }
+
+            let read = buffer
+                .len()
+                .min(self.max_read)
+                .min(self.input.len() - self.offset);
+            buffer[..read].copy_from_slice(&self.input[self.offset..self.offset + read]);
+            self.offset += read;
+            Poll::Ready(Ok(read))
+        }
+    }
+
+    fn poll_stream<R: AsyncRead + Unpin>(
+        stream: &mut ReaderStream<R>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<io::Result<Bytes>>> {
+        Pin::new(stream).poll_next(cx)
+    }
+
     #[test]
     fn constructors_and_data_stream_preserve_chunks() {
         let body = stream_body(stream::iter(vec![
@@ -703,6 +767,89 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].as_ref().unwrap().as_ref(), b"one" as &[u8]);
         assert_eq!(chunks[1].as_ref().unwrap().as_ref(), b"two" as &[u8]);
+    }
+
+    #[test]
+    fn reader_stream_keeps_buffer_while_pending_and_honors_chunk_size_changes() {
+        let input = b"a\xf0\x9f\x8c\x8d!z";
+        let reader = ControlledReader::new(input, 3, 3);
+        let mut stream = ReaderStream::new(reader).with_chunk_size(5);
+        let waker = futures_util::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(poll_stream(&mut stream, &mut cx), Poll::Pending));
+        let buffer_ptr = stream.buffer.as_ptr();
+        let buffer_capacity = stream.buffer.capacity();
+        assert!(buffer_capacity >= 5);
+
+        assert!(matches!(poll_stream(&mut stream, &mut cx), Poll::Pending));
+        assert_eq!(stream.buffer.as_ptr(), buffer_ptr);
+        assert_eq!(stream.buffer.capacity(), buffer_capacity);
+
+        stream = stream.with_chunk_size(2);
+        assert!(matches!(poll_stream(&mut stream, &mut cx), Poll::Pending));
+        assert_eq!(stream.buffer.as_ptr(), buffer_ptr);
+        assert_eq!(stream.buffer.capacity(), buffer_capacity);
+        assert_eq!(stream.buffer.len(), 2);
+
+        let mut chunks = Vec::new();
+        loop {
+            match poll_stream(&mut stream, &mut cx) {
+                Poll::Ready(Some(Ok(chunk))) => {
+                    assert!(chunk.len() <= 2);
+                    if chunks.is_empty() {
+                        assert_eq!(chunk.as_ptr(), buffer_ptr);
+                    }
+                    chunks.push(chunk);
+                }
+                Poll::Ready(None) => break,
+                Poll::Ready(Some(Err(error))) => panic!("unexpected reader error: {error}"),
+                Poll::Pending => panic!("reader returned more Pending polls than configured"),
+            }
+        }
+
+        let joined = chunks.concat();
+        assert_eq!(joined, input);
+        assert_eq!(chunks.iter().map(Bytes::len).collect::<Vec<_>>(), [2, 2, 2, 1]);
+        assert!(matches!(poll_stream(&mut stream, &mut cx), Poll::Ready(None)));
+    }
+
+    #[test]
+    fn reader_stream_into_inner_preserves_reader_after_pending() {
+        let reader = ControlledReader::new(b"data", 1, 2);
+        let mut stream = ReaderStream::new(reader);
+        let waker = futures_util::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(poll_stream(&mut stream, &mut cx), Poll::Pending));
+        let reader = stream.into_inner();
+        assert_eq!(reader.poll_count, 1);
+        assert_eq!(reader.offset, 0);
+    }
+
+    struct FailingReader;
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buffer: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::other("reader failed")))
+        }
+    }
+
+    #[test]
+    fn reader_stream_emits_error_once_then_ends() {
+        let mut stream = ReaderStream::new(FailingReader);
+        let waker = futures_util::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let Poll::Ready(Some(Err(error))) = poll_stream(&mut stream, &mut cx) else {
+            panic!("expected reader error");
+        };
+        assert_eq!(error.to_string(), "reader failed");
+        assert!(matches!(poll_stream(&mut stream, &mut cx), Poll::Ready(None)));
     }
 
     #[test]

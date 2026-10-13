@@ -16,9 +16,11 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use h12tiny_client_normalize::{extract_origin, normalize_http1_request, Origin};
+use h12tiny_client_normalize::{
+    extract_origin, normalize_http1_request, Error as NormalizeError, Origin,
+};
 use http::header::{CONNECTION, CONTENT_LENGTH, TRANSFER_ENCODING};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version};
 
@@ -62,6 +64,8 @@ impl Client {
     /// Sends one request and bounds the request write plus response-header
     /// read with `timeout`.
     ///
+    /// One absolute deadline covers those dispatch operations; connection
+    /// establishment is governed separately by [`Builder::connect_timeout`].
     /// This is intentionally not a whole-response deadline. A response body
     /// can stream indefinitely when callers keep making progress; use
     /// [`ResponseBody::set_read_timeout`] to bound individual reads.
@@ -113,17 +117,25 @@ impl Client {
             Version::HTTP_10 | Version::HTTP_11 => {}
             _ => return Err(Error::new(ErrorKind::UnsupportedVersion)),
         }
-        let origin = extract_origin(request.uri_mut(), is_connect)
-            .map_err(|error| Error::with_source(ErrorKind::AbsoluteUriRequired, error))?;
+        let origin = extract_origin(request.uri_mut(), is_connect).map_err(|error| {
+            let kind = match error {
+                NormalizeError::AbsoluteUriRequired => ErrorKind::AbsoluteUriRequired,
+                NormalizeError::InvalidPort => ErrorKind::InvalidPort,
+            };
+            Error::with_source(kind, error)
+        })?;
         normalize_http1_request(&mut request, self.set_host);
 
         let head_request = request.method() == Method::HEAD;
-        let mut connection = self.connect(&origin)?;
-        connection
-            .set_timeouts(timeout, timeout)
+        let connection = self.connect(&origin)?;
+        let deadline = DispatchDeadline::start(timeout)
             .map_err(|error| Error::from_io(ErrorKind::SendRequest, error))?;
+        let mut connection = DispatchConnection {
+            connection,
+            deadline,
+        };
         write_request(&mut connection, request.into_parts().0, content_length, body)?;
-        read_response(connection, head_request)
+        read_response(connection, head_request, is_connect)
     }
 
     fn connect(&self, origin: &Origin) -> Result<Connection, Error> {
@@ -366,6 +378,7 @@ pub struct Error {
 #[non_exhaustive]
 pub enum ErrorKind {
     AbsoluteUriRequired,
+    InvalidPort,
     UnsupportedScheme,
     TlsUnavailable,
     Connect,
@@ -414,6 +427,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self.kind {
             ErrorKind::AbsoluteUriRequired => "client requests require an absolute URI",
+            ErrorKind::InvalidPort => "request URI contains an invalid port",
             ErrorKind::UnsupportedScheme => "request URI scheme is unsupported",
             ErrorKind::TlsUnavailable => "HTTPS requires the `tls` feature",
             ErrorKind::Connect => "connection establishment failed",
@@ -450,7 +464,7 @@ impl ResponseBody {
     /// duration is rejected by `TcpStream` and is therefore not a timeout
     /// shorthand.
     pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
-        if self.is_complete() || !self.buffered.is_empty() {
+        if self.is_complete() {
             return Ok(());
         }
         self.connection.set_read_timeout(timeout)
@@ -464,7 +478,10 @@ impl ResponseBody {
     pub fn is_complete(&self) -> bool {
         matches!(
             self.mode,
-            BodyMode::Empty | BodyMode::ContentLength(0) | BodyMode::Chunked { complete: true, .. }
+            BodyMode::Empty
+                | BodyMode::ContentLength(0)
+                | BodyMode::Chunked { complete: true, .. }
+                | BodyMode::EofComplete
         )
     }
 
@@ -611,7 +628,14 @@ impl Read for ResponseBody {
         }
         match self.mode {
             BodyMode::Empty => Ok(0),
-            BodyMode::Eof => self.read_buffered(output),
+            BodyMode::Eof => {
+                let read = self.read_buffered(output)?;
+                if read == 0 {
+                    self.mode = BodyMode::EofComplete;
+                }
+                Ok(read)
+            }
+            BodyMode::EofComplete => Ok(0),
             BodyMode::ContentLength(remaining) => {
                 if remaining == 0 {
                     return Ok(0);
@@ -687,24 +711,6 @@ impl Read for Connection {
     }
 }
 
-impl Write for Connection {
-    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
-        match self {
-            Self::Tcp(stream) => stream.write(input),
-            #[cfg(feature = "tls")]
-            Self::Tls(stream) => stream.write(input),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Self::Tcp(stream) => stream.flush(),
-            #[cfg(feature = "tls")]
-            Self::Tls(stream) => stream.flush(),
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum BodyMode {
     Empty,
@@ -715,6 +721,189 @@ enum BodyMode {
         complete: bool,
     },
     Eof,
+    EofComplete,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DispatchDeadline {
+    Unlimited,
+    At(Instant),
+}
+
+impl DispatchDeadline {
+    fn start(timeout: Option<Duration>) -> io::Result<Self> {
+        match timeout {
+            Some(duration) => Self::at(duration, Instant::now()),
+            None => Ok(Self::Unlimited),
+        }
+    }
+
+    fn at(duration: Duration, now: Instant) -> io::Result<Self> {
+        now.checked_add(duration)
+            .map(Self::At)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "request timeout exceeds the monotonic clock range",
+                )
+            })
+    }
+
+    fn remaining_now(self) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Unlimited => Ok(None),
+            Self::At(_) => self.remaining_at(Instant::now()),
+        }
+    }
+
+    fn remaining_at(self, now: Instant) -> io::Result<Option<Duration>> {
+        match self {
+            Self::Unlimited => Ok(None),
+            Self::At(deadline) => match deadline.checked_duration_since(now) {
+                Some(remaining) if !remaining.is_zero() => Ok(Some(remaining)),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "request dispatch deadline elapsed",
+                )),
+            },
+        }
+    }
+
+    fn set_read_timeout(self, stream: &TcpStream) -> io::Result<()> {
+        match self {
+            Self::Unlimited => Ok(()),
+            Self::At(_) => stream.set_read_timeout(self.remaining_now()?),
+        }
+    }
+
+    fn set_write_timeout(self, stream: &TcpStream) -> io::Result<()> {
+        match self {
+            Self::Unlimited => Ok(()),
+            Self::At(_) => stream.set_write_timeout(self.remaining_now()?),
+        }
+    }
+}
+
+/// Applies one request deadline to every socket operation through final headers.
+struct DispatchConnection {
+    connection: Connection,
+    deadline: DispatchDeadline,
+}
+
+#[cfg(feature = "tls")]
+struct DispatchSocket<'a> {
+    stream: &'a mut TcpStream,
+    deadline: DispatchDeadline,
+}
+
+#[cfg(feature = "tls")]
+impl Read for DispatchSocket<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.deadline.set_read_timeout(self.stream)?;
+        check_deadline_after(self.deadline, self.stream.read(output))
+    }
+}
+
+#[cfg(feature = "tls")]
+impl Write for DispatchSocket<'_> {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        self.deadline.set_write_timeout(self.stream)?;
+        check_deadline_after(self.deadline, self.stream.write(input))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.deadline.set_write_timeout(self.stream)?;
+        check_deadline_after(self.deadline, self.stream.flush())
+    }
+}
+
+impl DispatchConnection {
+    fn finish(self) -> Result<Connection, Error> {
+        if matches!(self.deadline, DispatchDeadline::At(_)) {
+            self.deadline
+                .remaining_now()
+                .map_err(|error| Error::from_io(ErrorKind::Response, error))?;
+            self.connection
+                .set_timeouts(None, None)
+                .map_err(|error| Error::from_io(ErrorKind::Response, error))?;
+        }
+        Ok(self.connection)
+    }
+
+    fn check_after<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        check_deadline_after(self.deadline, result)
+    }
+}
+
+fn check_deadline_after<T>(
+    deadline: DispatchDeadline,
+    result: io::Result<T>,
+) -> io::Result<T> {
+    match result {
+        Ok(value) => {
+            deadline.remaining_now()?;
+            Ok(value)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+impl Read for DispatchConnection {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let result = match &mut self.connection {
+            Connection::Tcp(stream) => {
+                self.deadline.set_read_timeout(stream)?;
+                stream.read(output)
+            }
+            #[cfg(feature = "tls")]
+            Connection::Tls(stream) => {
+                let mut socket = DispatchSocket {
+                    stream: &mut stream.sock,
+                    deadline: self.deadline,
+                };
+                rustls::Stream::new(&mut stream.conn, &mut socket).read(output)
+            }
+        };
+        self.check_after(result)
+    }
+}
+
+impl Write for DispatchConnection {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        let result = match &mut self.connection {
+            Connection::Tcp(stream) => {
+                self.deadline.set_write_timeout(stream)?;
+                stream.write(input)
+            }
+            #[cfg(feature = "tls")]
+            Connection::Tls(stream) => {
+                let mut socket = DispatchSocket {
+                    stream: &mut stream.sock,
+                    deadline: self.deadline,
+                };
+                rustls::Stream::new(&mut stream.conn, &mut socket).write(input)
+            }
+        };
+        self.check_after(result)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let result = match &mut self.connection {
+            Connection::Tcp(stream) => {
+                self.deadline.set_write_timeout(stream)?;
+                stream.flush()
+            }
+            #[cfg(feature = "tls")]
+            Connection::Tls(stream) => {
+                let mut socket = DispatchSocket {
+                    stream: &mut stream.sock,
+                    deadline: self.deadline,
+                };
+                rustls::Stream::new(&mut stream.conn, &mut socket).flush()
+            }
+        };
+        self.check_after(result)
+    }
 }
 
 fn connect_tcp(host: &str, port: u16, timeout: Option<Duration>) -> io::Result<TcpStream> {
@@ -739,7 +928,7 @@ fn connect_tcp(host: &str, port: u16, timeout: Option<Duration>) -> io::Result<T
 }
 
 fn write_request(
-    connection: &mut Connection,
+    connection: &mut DispatchConnection,
     mut parts: http::request::Parts,
     content_length: u64,
     body: impl Read,
@@ -788,8 +977,9 @@ fn write_request(
 }
 
 fn read_response(
-    mut connection: Connection,
+    mut connection: DispatchConnection,
     head_request: bool,
+    connect_request: bool,
 ) -> Result<Response<ResponseBody>, Error> {
     let mut buffered = Vec::new();
     loop {
@@ -805,7 +995,11 @@ fn read_response(
         if status == StatusCode::SWITCHING_PROTOCOLS {
             return Err(Error::new(ErrorKind::UnsupportedUpgrade));
         }
+        if connect_request && status.is_success() {
+            return Err(Error::new(ErrorKind::UnsupportedUpgrade));
+        }
         let mode = response_body_mode(&headers, status, head_request)?;
+        let connection = connection.finish()?;
         let mut response = Response::new(ResponseBody {
             connection,
             buffered,
@@ -818,7 +1012,10 @@ fn read_response(
     }
 }
 
-fn read_response_head(connection: &mut Connection, buffered: &mut Vec<u8>) -> Result<usize, Error> {
+fn read_response_head(
+    connection: &mut DispatchConnection,
+    buffered: &mut Vec<u8>,
+) -> Result<usize, Error> {
     loop {
         if let Some(end) = find_head_end(buffered) {
             return Ok(end);
@@ -1032,11 +1229,95 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use http::Request;
 
     use super::{Client, ErrorKind};
+
+    struct ReleasedBody {
+        release: mpsc::Receiver<()>,
+        sent_first: bool,
+        sent_second: bool,
+    }
+
+    impl Read for ReleasedBody {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if output.is_empty() || self.sent_second {
+                return Ok(0);
+            }
+            if !self.sent_first {
+                self.sent_first = true;
+                output[0] = b'a';
+                return Ok(1);
+            }
+            self.release.recv().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "request body release signal was dropped",
+                )
+            })?;
+            self.sent_second = true;
+            output[0] = b'b';
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn dispatch_deadline_uses_the_remaining_budget_at_the_supplied_instant() {
+        let start = Instant::now();
+        let deadline = super::DispatchDeadline::at(Duration::from_secs(10), start).unwrap();
+
+        assert_eq!(
+            deadline.remaining_at(start).unwrap(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            deadline.remaining_at(start + Duration::from_secs(3)).unwrap(),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            deadline
+                .remaining_at(start + Duration::from_secs(10))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            deadline
+                .remaining_at(start + Duration::from_secs(11))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            super::DispatchDeadline::start(None)
+                .unwrap()
+                .remaining_at(start + Duration::from_secs(20))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            super::DispatchDeadline::at(Duration::MAX, start)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_port_has_its_own_error_kind() {
+        let request = Request::builder()
+            .uri("http://127.0.0.1:8080x/path")
+            .body(Vec::new())
+            .unwrap();
+
+        let error = match Client::new().request(request) {
+            Err(error) => error,
+            Ok(_) => panic!("an invalid port must not fall back to the scheme default"),
+        };
+        assert_eq!(error.kind(), ErrorKind::InvalidPort);
+    }
 
     #[test]
     fn writes_normalized_request_and_reads_chunked_body() {
@@ -1102,8 +1383,7 @@ mod tests {
             .unwrap();
         let error = Client::new()
             .request_streaming(request, 5, Some(Duration::from_millis(200)))
-            .err()
-            .expect("the server never responds");
+            .expect_err("the server never responds");
         assert!(error.is_timeout());
 
         let request = String::from_utf8(server.join().unwrap()).unwrap();
@@ -1129,8 +1409,7 @@ mod tests {
             .unwrap();
         let error = Client::new()
             .request_streaming(request, 10, None)
-            .err()
-            .expect("the reader is shorter than the declared length");
+            .expect_err("the reader is shorter than the declared length");
         assert_eq!(error.kind(), ErrorKind::SendRequest);
         server.join().unwrap();
     }
@@ -1150,9 +1429,12 @@ mod tests {
             .uri(format!("http://{address}/slow"))
             .body(Vec::new())
             .unwrap();
-        let error = Client::new()
+        let error = match Client::new()
             .request_with_timeout(request, Some(Duration::from_millis(20)))
-            .expect_err("a stalled response head must time out");
+        {
+            Err(error) => error,
+            Ok(_) => panic!("a stalled response head must time out"),
+        };
         assert_eq!(error.kind(), ErrorKind::Timeout);
         server.join().unwrap();
     }
@@ -1185,6 +1467,308 @@ mod tests {
             .body_mut()
             .set_read_timeout(Some(Duration::from_millis(900)))
             .expect("a completed body does not reconfigure its closed socket");
+    }
+
+    #[test]
+    fn buffered_body_timeout_refresh_applies_to_the_next_network_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, wait_for_release) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
+                .unwrap();
+            stream.flush().unwrap();
+            wait_for_release.recv().unwrap();
+        });
+
+        let request = Request::builder()
+            .uri(format!("http://{address}/timeout"))
+            .body(Vec::new())
+            .unwrap();
+        let mut response = Client::new().request(request).unwrap();
+        response
+            .body_mut()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        response
+            .body_mut()
+            .set_read_timeout(Some(Duration::from_millis(30)))
+            .unwrap();
+
+        let (read_finished, read_result) = mpsc::channel();
+        let mut body = response.into_body();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = [0; 2];
+            read_finished.send(body.read_exact(&mut bytes)).unwrap();
+        });
+        let result = read_result.recv_timeout(Duration::from_secs(1));
+        release.send(()).unwrap();
+        server.join().unwrap();
+        reader.join().unwrap();
+
+        let error = result
+            .expect("the configured body timeout should end the network read")
+            .expect_err("the server withheld the second body byte");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+    }
+
+    #[test]
+    fn dispatch_timeout_does_not_carry_into_body_streaming() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, wait_for_release) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
+                .unwrap();
+            stream.flush().unwrap();
+            wait_for_release.recv().unwrap();
+            stream
+                .write_all(b"y")
+                .expect("the server should deliver the final body byte");
+        });
+
+        let request = Request::builder()
+            .uri(format!("http://{address}/timeout"))
+            .body(Vec::new())
+            .unwrap();
+        let response = Client::new()
+            .request_with_timeout(request, Some(Duration::from_millis(60)))
+            .unwrap();
+        let (read_finished, read_result) = mpsc::channel();
+        let mut body = response.into_body();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            read_finished
+                .send(body.read_to_end(&mut bytes).map(|_| bytes))
+                .unwrap();
+        });
+
+        let premature_result = read_result.recv_timeout(Duration::from_millis(180));
+        release.send(()).unwrap();
+        server.join().unwrap();
+        reader.join().unwrap();
+
+        assert!(
+            matches!(premature_result, Err(mpsc::RecvTimeoutError::Timeout)),
+            "the dispatch deadline must stop when final response headers arrive"
+        );
+        assert_eq!(read_result.recv().unwrap().unwrap(), b"xy");
+    }
+
+    #[test]
+    fn request_write_and_final_headers_share_one_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (first_byte_sent, first_byte_received) = mpsc::channel();
+        let (stop, wait_for_stop) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let head_end = loop {
+                let mut input = [0_u8; 1024];
+                let read = stream.read(&mut input).unwrap();
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&input[..read]);
+                if let Some(end) = super::find_head_end(&request) {
+                    if request.len() > end + 4 {
+                        break end;
+                    }
+                }
+            };
+            first_byte_sent.send(()).unwrap();
+            while request.len() < head_end + 6 {
+                let mut input = [0_u8; 1024];
+                let read = stream.read(&mut input).unwrap();
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&input[..read]);
+            }
+            match wait_for_stop.recv_timeout(Duration::from_millis(150)) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        });
+
+        let (release_body, wait_to_release_body) = mpsc::channel();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{address}/shared-deadline"))
+            .body(ReleasedBody {
+                release: wait_to_release_body,
+                sent_first: false,
+                sent_second: false,
+            })
+            .unwrap();
+        let (request_finished, request_result) = mpsc::channel();
+        let client = Client::new();
+        let request_task = std::thread::spawn(move || {
+            request_finished
+                .send(client.request_streaming(
+                    request,
+                    2,
+                    Some(Duration::from_millis(250)),
+                ))
+                .unwrap();
+        });
+
+        let first_byte = first_byte_received.recv_timeout(Duration::from_secs(1));
+        let (timer_sender, timer) = mpsc::channel::<()>();
+        let timer_elapsed = matches!(
+            timer.recv_timeout(Duration::from_millis(150)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(timer_sender);
+        release_body.send(()).unwrap();
+
+        let result = request_result.recv_timeout(Duration::from_secs(1));
+        let _ = stop.send(());
+        server.join().unwrap();
+        request_task.join().unwrap();
+        assert!(first_byte.is_ok(), "server should receive the first body byte");
+        assert!(timer_elapsed, "body release should follow the controlled delay");
+        let result = result.expect("the request should stop at its shared write/header deadline");
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("header time must come from the same budget as request writing"),
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+    }
+
+    #[test]
+    fn request_timeout_is_shared_across_interim_and_final_header_reads() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, wait_for_stop) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            for fragment in [
+                b"HTTP/1.1 200 OK\r\n".as_slice(),
+                b"X-Last: value\r\n",
+                b"Content-Length: 0\r\n\r\n",
+            ] {
+                match wait_for_stop.recv_timeout(Duration::from_millis(140)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                if stream.write_all(fragment).is_err() {
+                    return;
+                }
+                let _ = stream.flush();
+            }
+        });
+
+        let request = Request::builder()
+            .uri(format!("http://{address}/slow-head"))
+            .body(Vec::new())
+            .unwrap();
+        let result = Client::new().request_with_timeout(
+            request,
+            Some(Duration::from_millis(250)),
+        );
+        let _ = stop.send(());
+        server.join().unwrap();
+
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("slow fragments must share one response-header deadline"),
+        };
+        assert_eq!(error.kind(), ErrorKind::Timeout);
+    }
+
+    #[test]
+    fn successful_connect_is_unsupported_but_rejected_connect_is_framed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for response in [
+                b"HTTP/1.1 200 Connection Established\r\nContent-Length: 1\r\n\r\nt".as_slice(),
+                b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 6\r\n\r\ndenied",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).unwrap();
+                stream.write_all(response).unwrap();
+            }
+        });
+
+        let client = Client::new();
+        let success = Request::builder()
+            .method("CONNECT")
+            .uri(format!("http://{address}/"))
+            .body(Vec::new())
+            .unwrap();
+        let error = match client.request(success) {
+            Err(error) => error,
+            Ok(_) => panic!("successful CONNECT requires a bidirectional tunnel API"),
+        };
+        assert_eq!(error.kind(), ErrorKind::UnsupportedUpgrade);
+
+        let rejected = Request::builder()
+            .method("CONNECT")
+            .uri(format!("http://{address}/"))
+            .body(Vec::new())
+            .unwrap();
+        let mut response = client
+            .request(rejected)
+            .expect("a rejected CONNECT response uses ordinary HTTP framing");
+        let mut body = Vec::new();
+        response.body_mut().read_to_end(&mut body).unwrap();
+        assert_eq!(response.status(), http::StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+        assert_eq!(body, b"denied");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn close_delimited_body_reports_completion_after_real_eof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut input = [0_u8; 1024];
+                let read = stream.read(&mut input).unwrap();
+                request.extend_from_slice(&input[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\n\r\nclose-delimited").unwrap();
+        });
+
+        let request = Request::builder()
+            .uri(format!("http://{address}/eof"))
+            .body(Vec::new())
+            .unwrap();
+        let mut response = Client::new().request(request).unwrap();
+        let mut empty = [];
+        assert_eq!(response.body_mut().read(&mut empty).unwrap(), 0);
+        assert!(!response.body().is_complete());
+
+        let mut body = Vec::new();
+        response.body_mut().read_to_end(&mut body).unwrap();
+        assert_eq!(body, b"close-delimited");
+        assert!(response.body().is_complete());
+        server.join().unwrap();
     }
 
     #[test]

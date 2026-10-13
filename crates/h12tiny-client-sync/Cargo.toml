@@ -2,7 +2,7 @@
 name = "h12tiny-client-sync"
 version = "0.3.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Blocking direct-origin HTTP/1.1 client for h12tiny"
 license = "MIT"
 

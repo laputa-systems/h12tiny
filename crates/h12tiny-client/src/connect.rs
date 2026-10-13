@@ -337,10 +337,11 @@ pub struct ConnectorBuilder {
 /// global provider selection.
 ///
 /// [`ClientTlsConfigBuilder::new`] uses h12tiny's Graviola provider, the
-/// WebPKI roots, no client certificate, and ALPN offerings for HTTP/2 then
-/// HTTP/1.1. Callers can replace the root store, ALPN list, or client
-/// authentication, or restrict TLS protocol versions while retaining that
-/// explicit provider. Applications with a different Rustls provider can use
+/// WebPKI roots, no client certificate, and ALPN offerings for the compiled
+/// HTTP versions, preferring HTTP/2 when it is enabled. Callers can replace
+/// the root store, ALPN list, or client authentication, or restrict TLS
+/// protocol versions while retaining that explicit provider. Applications
+/// with a different Rustls provider can use
 /// [`ClientTlsConfigBuilder::with_provider`] instead; this is useful when
 /// several Rustls consumers share one process.
 ///
@@ -382,7 +383,7 @@ impl ClientTlsConfigBuilder {
         Self {
             provider,
             roots: rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
-            alpn_protocols: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+            alpn_protocols: default_alpn_protocols(),
             protocol_versions: None,
             client_auth: ClientAuthentication::None,
         }
@@ -405,8 +406,8 @@ impl ClientTlsConfigBuilder {
 
     /// Replaces the ALPN protocol offerings sent during TLS negotiation.
     ///
-    /// The default offers HTTP/2 followed by HTTP/1.1. Supplying an empty
-    /// list deliberately disables ALPN negotiation.
+    /// The default offers the compiled HTTP versions, preferring HTTP/2.
+    /// Supplying an empty list deliberately disables ALPN negotiation.
     pub fn alpn_protocols(mut self, protocols: impl IntoIterator<Item = Vec<u8>>) -> Self {
         self.alpn_protocols = protocols.into_iter().collect();
         self
@@ -996,6 +997,16 @@ fn default_tls_config() -> rustls::ClientConfig {
         .expect("Graviola supports Rustls' safe default protocol versions")
 }
 
+#[cfg(feature = "tls")]
+fn default_alpn_protocols() -> Vec<Vec<u8>> {
+    vec![
+        #[cfg(feature = "http2")]
+        b"h2".to_vec(),
+        #[cfg(feature = "http1")]
+        b"http/1.1".to_vec(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -1012,6 +1023,16 @@ mod tests {
     };
     use crate::RequestOptions;
     use http::Uri;
+
+    #[cfg(feature = "tls")]
+    fn expected_default_alpn_protocols() -> Vec<Vec<u8>> {
+        vec![
+            #[cfg(feature = "http2")]
+            b"h2".to_vec(),
+            #[cfg(feature = "http1")]
+            b"http/1.1".to_vec(),
+        ]
+    }
 
     #[derive(Clone, Default)]
     struct RecordingDialer(Arc<Mutex<Vec<(Uri, bool)>>>);
@@ -1369,10 +1390,16 @@ mod tests {
 
     #[cfg(feature = "tls")]
     #[test]
-    fn default_config_offers_h2_then_http11() {
+    fn default_config_offers_only_compiled_protocols() {
+        let expected = expected_default_alpn_protocols();
+
         assert_eq!(
             super::default_tls_config().alpn_protocols,
-            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+            expected
+        );
+        assert_eq!(
+            ClientTlsConfigBuilder::new().build().unwrap().alpn_protocols,
+            expected
         );
     }
 
@@ -1395,10 +1422,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(
-            config.alpn_protocols,
-            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-        );
+        assert_eq!(config.alpn_protocols, expected_default_alpn_protocols());
     }
 
     #[cfg(feature = "tls")]
@@ -1409,9 +1433,6 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(
-            config.alpn_protocols,
-            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-        );
+        assert_eq!(config.alpn_protocols, expected_default_alpn_protocols());
     }
 }

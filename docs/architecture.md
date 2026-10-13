@@ -48,8 +48,9 @@ not select it.
 
 ## Upstream-derived code
 
-The async client and server transport build on `hyper-util` 0.1.20. The pool
-and server auto-selection source headers identify their upstream sections;
+The async client pool and server auto-selection adapt `hyper-util` 0.1.20 source.
+The protocol dependency is `laputa-hyper-futures-lite`. The source headers
+identify the upstream sections;
 connector and core I/O/runtime boundaries are rewritten for this workspace.
 The workspace split, blocking client, listener lifecycle, and application
 crates are local extensions. Keep applicable MIT attribution with substantial

@@ -12,7 +12,7 @@ use http::header::{HeaderValue, HOST};
 use http::uri::{Authority, Scheme};
 use http::{Method, Request, Uri};
 
-/// Canonical direct-origin identity: URI scheme plus authority.
+/// Direct-origin identity from the parsed URI scheme and authority.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Origin {
     scheme: Scheme,
@@ -25,7 +25,7 @@ impl Origin {
         &self.scheme
     }
 
-    /// Returns the canonical authority, including a non-default port.
+    /// Returns the parsed authority, retaining an explicitly supplied port.
     pub fn authority(&self) -> &Authority {
         &self.authority
     }
@@ -51,11 +51,16 @@ impl Origin {
 pub enum Error {
     /// A direct-origin request needs an absolute URI to identify its peer.
     AbsoluteUriRequired,
+    /// An explicit authority port is empty, malformed, or outside `u16` range.
+    InvalidPort,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("client requests require an absolute URI")
+        f.write_str(match self {
+            Self::AbsoluteUriRequired => "client requests require an absolute URI",
+            Self::InvalidPort => "URI authority contains an invalid port",
+        })
     }
 }
 
@@ -68,6 +73,9 @@ impl std::error::Error for Error {}
 /// names port 443; other authority targets use `http` to select the transport.
 pub fn extract_origin(uri: &mut Uri, is_connect: bool) -> Result<Origin, Error> {
     let original = uri.clone();
+    if let Some(authority) = original.authority() {
+        validate_port(authority)?;
+    }
     match (original.scheme(), original.authority()) {
         (Some(scheme), Some(authority)) => Ok(Origin {
             scheme: scheme.clone(),
@@ -85,6 +93,32 @@ pub fn extract_origin(uri: &mut Uri, is_connect: bool) -> Result<Origin, Error> 
             })
         }
         _ => Err(Error::AbsoluteUriRequired),
+    }
+}
+
+fn validate_port(authority: &Authority) -> Result<(), Error> {
+    // Authority::port() treats malformed and empty explicit ports as absent,
+    // so inspect the suffix before a connector can substitute a default.
+    let host_port = authority
+        .as_str()
+        .rsplit('@')
+        .next()
+        .expect("split always returns the authority's host and port");
+    let suffix = &host_port[authority.host().len()..];
+    let Some(port) = suffix.strip_prefix(':') else {
+        return if suffix.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::InvalidPort)
+        };
+    };
+    if !port.is_empty()
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok()
+    {
+        Ok(())
+    } else {
+        Err(Error::InvalidPort)
     }
 }
 
@@ -215,6 +249,32 @@ mod tests {
 
         let ipv6 = normalized("http://[::1]:8080/a");
         assert_eq!(ipv6.headers()[HOST], "[::1]:8080");
+    }
+
+    #[test]
+    fn explicit_ports_must_be_nonempty_decimal_u16_values() {
+        for input in [
+            "http://example.test:8080x/a",
+            "http://example.test:65536/a",
+            "http://example.test:/a",
+        ] {
+            let mut uri = input.parse::<Uri>().unwrap();
+            assert_eq!(
+                extract_origin(&mut uri, false),
+                Err(Error::InvalidPort),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_ports_and_bracketed_ipv6_origins_remain_valid() {
+        let mut no_port = "https://example.test/path".parse::<Uri>().unwrap();
+        assert!(extract_origin(&mut no_port, false).is_ok());
+
+        let mut ipv6 = "https://[::1]:8443/path".parse::<Uri>().unwrap();
+        let origin = extract_origin(&mut ipv6, false).unwrap();
+        assert_eq!(origin.authority().as_str(), "[::1]:8443");
     }
 
     #[test]

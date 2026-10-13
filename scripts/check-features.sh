@@ -156,4 +156,8 @@ cargo check -p h12tiny --no-default-features --features websocket
 cargo check -p h12tiny --no-default-features --features client,server,http1,http2,tls
 cargo check -p h12tiny --no-default-features --features full
 
+# Single-protocol defaults are compiled out of the all-features test suite.
+cargo test --locked -p h12tiny --no-default-features --features client,server,http1,tls --test dogfood_tls_h1_only
+cargo test --locked -p h12tiny --no-default-features --features client,server,http2 --test dogfood_h2_prior h2_only_build_default_uses_cleartext_prior_knowledge
+
 printf '%s\n' 'feature and dependency isolation checks passed'
