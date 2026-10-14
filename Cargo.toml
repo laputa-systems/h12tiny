@@ -30,7 +30,7 @@ futures-rustls = { version = "0.26.0", default-features = false, features = ["tl
 futures-util = { version = "0.3.34", default-features = false, features = ["async-await", "std"] }
 http = "1.5.0"
 http-body = "1.1.0"
-hyper = { package = "laputa-hyper-futures-lite", version = "=1.11.1-beta.0", default-features = false }
+hyper = { package = "laputa-hyper-futures-lite", version = "=1.12.0-beta.0", default-features = false }
 pin-project-lite = "0.2.17"
 # h12tiny builds every TLS config with `builder_with_provider`, selecting
 # Graviola explicitly. Do not enable Rustls' `custom-provider` feature: Cargo
