@@ -1,0 +1,22 @@
+[package]
+name = "laputa-fastwebsockets-futures-lite"
+description = "A fast RFC6455 WebSocket implementation adapted for futures-lite::io"
+version = "0.10.0"
+authors = ["Divy Srivastava <dj.srivastava23@gmail.com>"]
+license = "Apache-2.0"
+edition = "2021"
+autoexamples = false
+repository = "https://github.com/denoland/fastwebsockets"
+
+[lib]
+name = "fastwebsockets"
+
+[dependencies]
+futures-lite = "2"
+simdutf8 = "0.1.5"
+fastrand = "2"
+thiserror = "1.0.40"
+bytes = "1.5.0"
+
+[dev-dependencies]
+futures-lite = "2"

@@ -1,7 +1,7 @@
 # Architecture and boundaries
 
 h12tiny owns direct-origin endpoint policy and small application conveniences.
-The futures-I/O protocol substrate owns HTTP framing and protocol state.
+The futures-I/O protocol crates own HTTP framing and protocol state.
 
 ## Crates
 
@@ -23,11 +23,17 @@ not depend on server or web.
 
 ## Protocol and runtime ownership
 
-The async client and server use Hyper's futures-I/O build and its H2 substrate
-for HTTP framing, parsing, HPACK, flow control, streams, SETTINGS, GOAWAY, and
-request/response dispatch. h12tiny supplies direct-origin connection policy,
-normalization, pooling, runtime adaptation, lifecycle, and server protocol
-selection.
+The async client and server use `laputa-hyper-futures-lite` for HTTP framing.
+`laputa-h2-futures-lite` implements parsing, HPACK, flow control, streams,
+SETTINGS, GOAWAY, and request dispatch. h12tiny supplies direct-origin
+connection policy, normalization, pooling, runtime adaptation, lifecycle, and
+server protocol selection.
+
+The repository includes the Laputa Hyper, H2, and fastwebsockets crates under
+[`crates/`](../crates/). h12tiny and Hyper use local path dependencies for
+those packages. Cargo still uses each package's declared version when it
+publishes a crate. The fork packages keep their own manifests and verification
+commands.
 
 Production async code uses Hyper's executor boundary and the core timer
 adapter; it has no Tokio runtime dependency. The blocking client is independent

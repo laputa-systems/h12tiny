@@ -16,8 +16,11 @@ workspace checks below are the broader integration gates.
   `full`. Dev and optional packages in Cargo.lock are not a policy failure.
 - `scripts/miri-io.sh` runs the focused unsafe I/O adapter tests under nightly
   Miri.
-- `sh scripts/check-msrv.sh` installs and checks each manifest's declared
-  minimum Rust version across its supported feature selections.
+- `sh scripts/check-msrv.sh` checks the h12tiny component MSRVs listed in that
+  script across their supported feature selections.
+- H2: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --lib`.
+- Hyper: `cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full`.
+- fastwebsockets: run `cargo test --all-features` from `crates/laputa-fastwebsockets-futures-lite`.
 
 The integration tests cover adversarial H1 framing, H2 lifecycle and
 cancellation, cleartext and TLS protocol selection, client compatibility,
@@ -27,16 +30,20 @@ nearest fixture when changing one of those contracts.
 CI and `make test` run `cargo test --locked --workspace --all-features`.
 CI also checks workspace Clippy, feature isolation, and the full normal
 dependency policy on macOS and Linux. A separate Linux job checks the
-declared minimum compiler versions.
+declared minimum compiler versions. The fork packages are excluded from the
+h12tiny Cargo workspace, so run their commands above when changing fork code.
 
 The pinned nightly is the development toolchain; see the
 [current compiler requirements](../README.md#add-it) for consumers.
 
 `make lint` checks workspace Clippy with all targets and features.
-`make publish` bumps workspace minor versions, commits and tags the release,
-and publishes crates in dependency order. It can resume a partial publication
-while HEAD remains the matching release commit. Run it only when releasing,
-with `TMPDIR` set to the repository's `.work/tmp` for its backup files.
+`make publish` bumps h12tiny workspace minor versions, commits and tags the
+release, and publishes h12tiny crates in dependency order. It does not publish
+the fork packages. It can resume a partial publication while HEAD remains the
+matching release commit. Run it only when releasing, with `TMPDIR` set to the
+repository's `.work/tmp` for its backup files. See the
+[upstream rebase guide](../.agents/skills/rebase-upstreams/SKILL.md) and the
+[fork publish guide](../.agents/skills/publish-forks/SKILL.md) for fork releases.
 
 External interoperability and performance runs require separate tools and
 endpoint setup; see the [scripts guide](../scripts/README.md). Performance

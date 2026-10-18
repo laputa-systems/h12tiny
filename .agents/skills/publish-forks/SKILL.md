@@ -1,51 +1,58 @@
 ---
 name: publish-forks
-description: "Use for publishing the rebased futures-lite forks and h12tiny to crates.io in dependency order: h2, hyper, fastwebsockets, then h12tiny. Runs after rebase-upstreams."
+description: "Publish the fork packages from the h12tiny monorepo in dependency order, then release h12tiny when separately requested."
 disable-model-invocation: true
 ---
 
-# Publish Forks
+# Publish the fork packages
 
-Publish the rebased forks and h12tiny to crates.io, in dependency order.
-Publishing and pushing are outward-facing: run them only on an explicit ask
-in this session naming the crates. Stop for that confirmation after dry-runs.
+Publish the fork packages from their manifests under `crates/`. Publishing and
+pushing are outward-facing. Do them only when the owner explicitly names the
+crates to publish.
 
 ## Order
 
-1. `../h2-futures-lite` (`laputa-h2-futures-lite`)
-2. `../hyper-futures-lite` (`laputa-hyper-futures-lite`, pins the h2 beta)
-3. `../fastwebsockets-futures-lite` (`laputa-fastwebsockets-futures-lite`)
-4. This repo (`h12tiny` workspace, pins the hyper beta)
+1. `crates/laputa-h2-futures-lite` (`laputa-h2-futures-lite`)
+2. `crates/laputa-hyper-futures-lite` (`laputa-hyper-futures-lite`)
+3. `crates/laputa-fastwebsockets-futures-lite` (`laputa-fastwebsockets-futures-lite`)
+4. The h12tiny workspace, only when separately requested
 
 ## Rules
 
-- **rebase-upstreams first.** Each crate's verification from that skill must be green. Never publish over red checks.
-- **No `[patch]` sections.** `grep -rn "\[patch" --include=Cargo.toml` across all four repos must be empty before any publish.
-- **Skip unchanged crates.** If the local version is already on crates.io (publish reports already-uploaded, and the tree has no changes since that release), skip it and continue downstream. Do not republish.
-- **Pinned nightly stays.** Do not change any `rust-toolchain.toml` channel.
+- Complete the [upstream rebase workflow](../rebase-upstreams/SKILL.md) first.
+- Require a clean monorepo tree before a dry run or publish.
+- Run commands from the monorepo root and set `ROOT=$(git rev-parse --show-toplevel)`.
+- Ensure `/.work/` appears in `.git/info/exclude` before creating `.work/tmp`.
+  Set `TMPDIR` to `$ROOT/.work/tmp` for Cargo commands.
+- Keep the root and fork manifests free of `[patch.crates-io]` sections.
+- Publish only changed fork packages. Skip a version already on crates.io when
+  its source has not changed since release.
+- The fork packages are excluded from the h12tiny Cargo workspace. Use
+  `--manifest-path` for every fork package command.
+- Do not push the monorepo or a fork branch unless the owner asks.
+- Keep every `rust-toolchain.toml` channel unchanged.
 
-## Steps
+## Dry run
 
-1. **Confirm scope.** Clean trees everywhere, versions as settled by the rebase
-   (h2 `<upstream>-beta.0`, hyper `<upstream>-beta.0`, fastwebsockets only if
-   the port changed), downstream pins already bumped. Run
-   `cargo publish --dry-run` per changed crate in order. Then stop and ask the
-   owner to confirm the publish list.
-2. **Publish bottom-up.** For each confirmed crate in order: `cargo publish`,
-   then confirm the version resolves from crates.io (`cargo update -p <pkg>
-   --precise <version> --dry-run` from the downstream repo, retrying on index
-   lag) before moving up the stack. Do not rely on pushing the branch: the
-   fork pre-push hook refuses non-terminal pushes, so report each published
-   crate's unpushed branch and leave `git push` to the owner.
-3. **Update h12tiny.** Remove nothing; set the workspace `hyper` pin (root
-   `Cargo.toml`) and the `fastwebsockets` pin (`crates/h12tiny-web/Cargo.toml`,
-   only if republished) to the published versions, run `cargo update -p ...`
-   for real, and verify with `make test` (`cargo test --locked --workspace
-   --all-features`). Then `scripts/check-features.sh` and
-   `sh scripts/check-normal-dependencies.sh`.
-4. **Release h12tiny** only if asked: `make publish` bumps workspace minor
-   versions, tags, and publishes crates in dependency order. That is a
-   separate decision from publishing the forks.
+Run `cargo publish --manifest-path <manifest> --dry-run` for each changed fork
+package in dependency order. Then report the exact package names and versions
+and wait for the owner's explicit publish request.
 
-**Reply:** what was published (versions, order), what was skipped and why,
-downstream pin/lock updates, and check results.
+## Publish
+
+For each confirmed package, run `cargo publish --manifest-path <manifest>` in
+dependency order. Verify the published version with
+`cargo info <package>@<version>` before moving to its dependent package. Retry
+after registry index lag when needed.
+
+After publishing the fork packages, the root `Cargo.lock` continues to point
+at local paths for development. The package manifests keep the published
+version requirements; Cargo omits the local `path` fields when it packages a
+crate.
+
+Run `make publish` only when the owner separately asks to release h12tiny. It
+bumps, commits, tags, and publishes only h12tiny workspace crates. It does not
+publish the fork packages.
+
+Report the packages and versions published or skipped, registry checks, and
+any h12tiny release decision that remains.

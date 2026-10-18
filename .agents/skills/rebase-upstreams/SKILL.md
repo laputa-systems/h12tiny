@@ -1,50 +1,163 @@
 ---
 name: rebase-upstreams
-description: "Use for rebasing ../h2-futures-lite and ../hyper-futures-lite onto hyperium upstreams, including ../fastwebsockets-futures-lite (no upstream), and updating h12tiny. Temporarily path-overrides h12tiny to the local forks and uses h12tiny as verification."
+description: "Rebase the h2 and hyper futures-lite forks onto Hyperium upstream, refresh their monorepo sources, and verify h12tiny against them."
 disable-model-invocation: true
 ---
 
-# Rebase Upstreams
+# Rebase the fork sources
 
-Rebase the sibling futures-lite forks onto their hyperium upstreams, then update
-h12tiny. h12tiny verifies the forks via temporary local path overrides.
-Commit nothing. Never push. Never `cargo publish`.
+Rebase the Laputa h2 and hyper branches in temporary clones under `.work/tmp`,
+then copy the updated sources into `crates/`. h12tiny uses local path
+dependencies to these sources. Do not commit the monorepo, push, or publish.
 
-## Scope
+## Source layout
 
-- `../h2-futures-lite`: `origin` is hyperium/h2, local `master` tracks the `josh` fork with the futures-lite port stack on top.
-- `../hyper-futures-lite`: `origin` is hyperium/hyper, same layout.
-- `../fastwebsockets-futures-lite`: no upstream; `origin` is the laputa-systems fork itself (branch `main`). Never rebased, only verified and optionally version-bumped.
-- This repo (`h12tiny`): depends on the published `laputa-hyper-futures-lite` (= pin) and `laputa-fastwebsockets-futures-lite` from crates.io; hyper pulls `laputa-h2-futures-lite`.
-- Order matters: rebase and settle h2 first, then hyper (hyper pins an exact h2 beta).
+- `crates/laputa-h2-futures-lite`: `laputa-h2-futures-lite`
+- `crates/laputa-hyper-futures-lite`: `laputa-hyper-futures-lite`
+- `crates/laputa-fastwebsockets-futures-lite`: `laputa-fastwebsockets-futures-lite`
+
+The package directories have no nested `.git` directories. Temporary clones hold
+the h2 and hyper branch histories and upstream remotes.
 
 ## Rules
 
-- **Clean trees or stop.** `git status --porcelain` must be empty in all four repos (h12tiny plus the three siblings) before starting. On any failure, stop and report; leave a conflicted rebase in place for the owner, never abort away resolution work.
-- **Discover, do not hardcode.** Find each port stack with `git fetch origin` then `git log --oneline $(git merge-base master origin/master)..master`. Never assume base SHAs or version numbers.
-- **Non-interactive rebase.** The harness has no usable editor; run every `git rebase --continue` as `GIT_EDITOR=true git rebase --continue`.
-- **Port intent wins conflicts.** Keep the futures-lite adaptations (futures-io/futures-lite runtime neutrality, renamed `laputa-*` packages, non-optional `futures-channel` where the port made it so, gated `tracing`). Take upstream for everything else. Never silently drop a port commit.
-- **Version conflicts resolve forward.** Each port commit touching `Cargo.toml` re-conflicts on the version field. Resolve every one to the port package name at `<new-upstream>-beta.0`, preserving the exact `=` pin style.
-- **New upstream code on port-replaced types gets adapted.** When upstream adds calls against a type the port replaced (e.g. tokio mpsc `poll_recv` vs futures-channel), rewrite the new code onto the port's adapter keeping upstream's intent, in a fix commit on the fork.
-- **Pre-existing red stays red unless trivial.** A fork check that fails identically on the pre-rebase base (confirm via a detached worktree at the old base) is not rebase-caused. Fix it only if it is small and in port-owned code; otherwise report it. Hyper's tokio-based lib tests are known-red this way: `cargo check --features full` is the fork gate, lib-test failures of the same missing-crate kinds as the base are informational.
-- **Pinned nightly stays.** Do not change any `rust-toolchain.toml` channel.
-- **Local-only mutations.** Committing, pushing, and publishing all require an explicit ask beyond this skill.
+- Stop unless the monorepo working tree is clean.
+- Put clones and temporary files under `.work/tmp`. Ensure `/.work/` appears in
+  `.git/info/exclude`, then set `TMPDIR` to `$ROOT/.work/tmp`.
+- Rebase h2 before hyper. Hyper pins an exact h2 beta.
+- Copy each current monorepo source snapshot into its temporary clone before
+  rebasing. Commit snapshot changes in the temporary clone so monorepo edits
+  survive the rebase.
+- Resolve conflicts in favor of the futures-lite port for `futures-io`,
+  `futures-lite`, renamed `laputa-*` packages, non-optional `futures-channel`,
+  and gated `tracing`. Keep upstream changes elsewhere.
+- Resolve port commits that change a package version to `<upstream>-beta.0`.
+  Keep exact `=` requirements on fork dependencies.
+- Keep every `rust-toolchain.toml` channel unchanged.
+- Leave a conflicted temporary clone in `.work/tmp`. Do not abort away conflict
+  resolution work.
 
-## Steps
+## Rebase and install
 
-1. **Baseline.** Record `git log --oneline -3` and `git status -sb` in all four repos, plus the current `laputa-*` pins in this repo's root `Cargo.toml` and each fork's `Cargo.toml`.
-2. **Rebase h2.** In `../h2-futures-lite`: `git fetch origin`, rebase the port stack with `git rebase --onto origin/master <merge-base> master`. If upstream released a new tag (check `git tag --sort=-v:refname | head`), bump the fork version to `<upstream>-beta.0`. Run `cargo check` and `cargo test --lib`.
-3. **Rebase hyper.** In `../hyper-futures-lite`: `git fetch origin`, same rebase procedure. Update its `h2 = { package = "laputa-h2-futures-lite", version = "=..." }` pin to the settled h2 beta from step 2, bump its own version to `<upstream>-beta.0` on a new upstream tag. Its own checks need the unpublished h2: add a temporary `[patch.crates-io]` for `laputa-h2-futures-lite` pointing at `../h2-futures-lite`, run `cargo check --features full`, then remove the patch before finishing.
-4. **Settle fastwebsockets.** In `../fastwebsockets-futures-lite` (branch `main`): no fetch, no rebase, there is no upstream. Run `cargo test --all-features`. Bump its version only if the port itself changed during this run.
-5. **Point h12tiny at the new betas, then patch.** Bump this repo's workspace `hyper` pin (root `Cargo.toml`) and the `fastwebsockets` pin (`crates/h12tiny-web/Cargo.toml`, only if step 4 bumped it) to the settled fork versions *before* verifying: with exact `=` pins, a `[patch.crates-io]` entry whose version does not match the requirement is silently ignored. Then append:
-   ```toml
-   [patch.crates-io]
-   laputa-h2-futures-lite = { path = "../h2-futures-lite" }
-   laputa-hyper-futures-lite = { path = "../hyper-futures-lite" }
-   laputa-fastwebsockets-futures-lite = { path = "../fastwebsockets-futures-lite" }
+1. From the monorepo root, set `ROOT=$(git rev-parse --show-toplevel)`. Record
+   `git log --oneline -3`, `git status -sb`, the three fork versions, and the
+   dependency version requirements in the root and fork manifests.
+2. Confirm `.work/` is ignored through `.git/info/exclude`. Create
+   `$ROOT/.work/tmp/upstreams` and export `TMPDIR="$ROOT/.work/tmp"`.
+3. Clone h2 and overlay the current source snapshot:
+
+   ```sh
+   git clone --branch master git@github.com:laputa-systems/h2-futures-lite.git "$TMPDIR/upstreams/laputa-h2-futures-lite"
+   rsync -a --delete --exclude='/.git/' --exclude='/Cargo.lock' "$ROOT/crates/laputa-h2-futures-lite/" "$TMPDIR/upstreams/laputa-h2-futures-lite/"
+   git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" add --all
    ```
-   Run `cargo update -p <each laputa crate>` and prove the patch applies: no `was not used in the crate graph` warnings and `cargo tree -i laputa-hyper-futures-lite` shows the local path. If the patch is ignored, stop: the verification that follows would test the old registry crates.
-6. **Verify with h12tiny.** With the patch proven active: `cargo test --workspace --all-features` (not `--locked`; the patch intentionally moves the lockfile), then `scripts/check-features.sh` and `sh scripts/check-normal-dependencies.sh`. The `websocket` feature exercises the fastwebsockets fork. Run `make lint` only if steps so far are green. On a hang, first re-check step 5's proof, reproduce the single test solo, and compare against a base worktree at HEAD before suspecting the rebase.
-7. **Unpatch, restore, report.** Remove the `[patch.crates-io]` section, keeping the pin bumps. Restore `Cargo.lock` from HEAD (`git checkout -- Cargo.lock`) since the new betas are unpublished and the lock cannot resolve them yet. Confirm no `[patch]` section remains in any of the four repos. Report: port stacks rebased onto which upstream SHAs, version bumps made, checks run with results, and the exact follow-ups (`cargo publish` in each fork bottom-up, then `cargo update -p ...`, then `make test`).
 
-**Reply:** upstream SHAs rebased onto, version bumps, which checks ran and which did not, and the publish/update commands left for the owner.
+   Commit the staged snapshot only when it differs from the clone's HEAD.
+   Use `chore: sync monorepo fork snapshot` for that temporary commit.
+4. Add and fetch the h2 upstream, then record the port stack:
+
+   ```sh
+   git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" remote add upstream https://github.com/hyperium/h2.git
+   git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" fetch upstream --tags
+   git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" log --oneline "$(git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" merge-base master upstream/master)..master"
+   ```
+
+   Set and use the base in the temporary clone:
+
+   ```sh
+   base=$(git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" merge-base master upstream/master)
+   git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" rebase --onto upstream/master "$base" master
+   ```
+
+   After resolving a conflict, continue with
+   `GIT_EDITOR=true git rebase --continue` from the clone. Check its newest
+   upstream tags with `git -C "$TMPDIR/upstreams/laputa-h2-futures-lite" tag
+   --sort=-v:refname | head`. Set the h2 version to `<upstream>-beta.0` when
+   Hyperium has released a new tag.
+5. Copy the rebased h2 sources back to the repository:
+
+   ```sh
+   rsync -a --delete --exclude='/.git/' --exclude='/Cargo.lock' "$TMPDIR/upstreams/laputa-h2-futures-lite/" "$ROOT/crates/laputa-h2-futures-lite/"
+   ```
+
+   Run the h2 checks from the monorepo root:
+
+   ```sh
+   cargo check --manifest-path crates/laputa-h2-futures-lite/Cargo.toml
+   cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --lib
+   ```
+
+6. Set Hyper's exact h2 version in `crates/laputa-hyper-futures-lite/Cargo.toml` to the
+   settled h2 beta. Keep its local path `../laputa-h2-futures-lite`. Clone hyper,
+   overlay the current monorepo snapshot, and commit staged snapshot changes in
+   the temporary clone:
+
+   ```sh
+   git clone --branch master git@github.com:laputa-systems/hyper-futures-lite.git "$TMPDIR/upstreams/laputa-hyper-futures-lite"
+   rsync -a --delete --exclude='/.git/' --exclude='/Cargo.lock' "$ROOT/crates/laputa-hyper-futures-lite/" "$TMPDIR/upstreams/laputa-hyper-futures-lite/"
+   git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" add --all
+   ```
+
+7. Add and fetch the Hyperium upstream:
+
+   ```sh
+   git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" remote add upstream https://github.com/hyperium/hyper.git
+   git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" fetch upstream --tags
+   git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" log --oneline "$(git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" merge-base master upstream/master)..master"
+   ```
+
+   Set the base and rebase Hyper:
+
+   ```sh
+   base=$(git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" merge-base master upstream/master)
+   git -C "$TMPDIR/upstreams/laputa-hyper-futures-lite" rebase --onto upstream/master "$base" master
+   ```
+
+   Continue conflicts with `GIT_EDITOR=true git rebase --continue` from the
+   Hyper clone. If Hyperium has a new tag, set Hyper's version to
+   `<upstream>-beta.0`. Keep its exact h2 beta pin and local path. Hyper's h2
+   path resolves because both clones are under `$TMPDIR/upstreams/`.
+8. Copy the rebased Hyper sources back to the repository:
+
+   ```sh
+   rsync -a --delete --exclude='/.git/' --exclude='/Cargo.lock' "$TMPDIR/upstreams/laputa-hyper-futures-lite/" "$ROOT/crates/laputa-hyper-futures-lite/"
+   ```
+
+   Then run:
+
+   ```sh
+   cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full
+   ```
+
+   Hyper's Tokio-based library tests are not a gate. `cargo check --features
+   full` is the Hyper gate. Compare any other failure with the fork branch
+   before the rebase.
+9. Fastwebsockets has no upstream. Run `cargo test --all-features` from
+   `crates/laputa-fastwebsockets-futures-lite`. Bump its version only when its source
+   changes.
+10. Update the root Hyper pin in `Cargo.toml` and the fastwebsockets pin in
+    `crates/h12tiny-web/Cargo.toml` when their package versions changed. Run
+    these commands from the monorepo root:
+
+    ```sh
+    cargo update -p laputa-h2-futures-lite
+    cargo update -p laputa-hyper-futures-lite
+    cargo update -p laputa-fastwebsockets-futures-lite
+    ```
+
+    Confirm the package paths from the monorepo root:
+
+    ```sh
+    cargo tree -i laputa-h2-futures-lite
+    cargo tree -i laputa-hyper-futures-lite
+    cargo tree --features websocket -i laputa-fastwebsockets-futures-lite
+    ```
+11. Run `cargo test --workspace --all-features`, `scripts/check-features.sh`,
+    and `sh scripts/check-normal-dependencies.sh`. Run `make lint` when those
+    checks pass. The `websocket` feature exercises the fastwebsockets fork.
+12. Keep the updated root `Cargo.lock`; it records local path dependencies.
+    Confirm no `[patch]` section remains in the root or fork manifests. Remove
+    successful temporary clones. Leave conflicted clones in place.
+
+Report the upstream SHAs, package version changes, checks, and any follow-up
+publication needed for the new versions.

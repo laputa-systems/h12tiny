@@ -615,8 +615,6 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "laputa-fastwebsockets-futures-lite"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90f8a7d70dd6fa30a513bfe2806b910f921c808c4eff50507b2cbe307c6c290d"
 dependencies = [
  "bytes",
  "fastrand",
@@ -628,8 +626,6 @@ dependencies = [
 [[package]]
 name = "laputa-h2-futures-lite"
 version = "0.4.20-beta.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d26dcbb89718ab44652ef9cf634a7082c6700f4b060069de08cad304e7da0ef"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -648,8 +644,6 @@ dependencies = [
 [[package]]
 name = "laputa-hyper-futures-lite"
 version = "1.12.0-beta.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf2f825e7b83ea97d3c32efe96cd423c2dee61fd735224da9577cef59ad68bc7"
 dependencies = [
  "atomic-waker",
  "bytes",
