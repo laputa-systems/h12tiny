@@ -33,7 +33,7 @@ temporary_manifest=
 backup_dir=
 release_started=0
 release_committed=0
-release_subject="release: h12tiny workspace minor"
+release_subject="chore(release): bump h12tiny workspace minor versions"
 newline=$(printf '\nX')
 newline=${newline%X}
 
