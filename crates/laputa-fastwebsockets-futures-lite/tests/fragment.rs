@@ -50,6 +50,59 @@ fn noop_send(
 }
 
 #[test]
+fn split_fragment_collector_rejects_message_restarts() {
+  futures_lite::future::block_on(async {
+    for initial in [OpCode::Text, OpCode::Binary] {
+      for restart in [OpCode::Text, OpCode::Binary] {
+        for fin in [false, true] {
+          let mut data = masked_frame(false, initial, b"original");
+          data.extend(masked_frame(fin, restart, b"replacement"));
+          data.extend(masked_frame(true, OpCode::Continuation, b"!"));
+          let (reader, _) = after_handshake_split(
+            Cursor::new(data),
+            futures_lite::io::sink(),
+            Role::Server,
+          );
+          let mut messages = fws::FragmentCollectorRead::new(reader);
+          assert!(matches!(
+            messages.read_frame(&mut noop_send).await,
+            Err(WebSocketError::InvalidFragment)
+          ));
+        }
+      }
+    }
+  });
+}
+
+#[test]
+fn split_fragment_collector_keeps_messages_across_ping() {
+  futures_lite::future::block_on(async {
+    for opcode in [OpCode::Text, OpCode::Binary] {
+      let mut data = masked_frame(false, opcode, b"original");
+      data.extend(masked_frame(true, OpCode::Ping, b"ping"));
+      data.extend(masked_frame(true, OpCode::Continuation, b"!"));
+      let (reader, _) = after_handshake_split(
+        Cursor::new(data),
+        futures_lite::io::sink(),
+        Role::Server,
+      );
+      let mut messages = fws::FragmentCollectorRead::new(reader);
+      let mut replies = Vec::new();
+      let frame = messages.read_frame(&mut |frame: Frame<'_>| {
+        replies.push((frame.opcode, frame.payload.to_vec()));
+        futures_lite::future::ready(Ok::<_, WebSocketError>(()))
+      }).await.unwrap();
+      assert_eq!(frame.opcode, opcode);
+      assert_eq!(&*frame.payload, b"original!");
+      assert!(frame.fin);
+      assert_eq!(replies.len(), 1);
+      assert_eq!(replies[0].0, OpCode::Pong);
+      assert_eq!(replies[0].1, b"ping");
+    }
+  });
+}
+
+#[test]
 fn split_fragment_collector_rejects_aggregate_binary_over_limit() {
   futures_lite::future::block_on(async {
     let frames = vec![

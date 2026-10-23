@@ -117,10 +117,10 @@ impl Fragments {
   ) -> Result<Option<Frame<'f>>, WebSocketError> {
     match frame.opcode {
       OpCode::Text | OpCode::Binary => {
+        if self.fragments.is_some() {
+          return Err(WebSocketError::InvalidFragment);
+        }
         if frame.fin {
-          if self.fragments.is_some() {
-            return Err(WebSocketError::InvalidFragment);
-          }
           if frame.opcode == OpCode::Text
             && simdutf8::compat::from_utf8(&frame.payload).is_err()
           {

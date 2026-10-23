@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 9
 
-### H12T-2 · P2 · A new fragmented message replaces unfinished content
-
-- **Area:** Data
-- **Where:** `crates/laputa-fastwebsockets-futures-lite/src/fragment.rs:119`, `crates/laputa-fastwebsockets-futures-lite/src/fragment.rs:134`, `crates/h12tiny-web/src/lib.rs:2240`
-- **Problem:** The nonfinal Text/Binary branch overwrites the active fragmented message. A public-API probe sent nonfinal Binary(`original`), nonfinal Binary(`replacement`), then final Continuation(`!`), and received `Ok("replacement!")`. Only the final-frame branch currently rejects starting a second message. The default h12tiny collector therefore accepts invalid interleaving and discards the original content.
-- **Recommendation:** Reject a new Text/Binary frame whenever a fragmented message is active, regardless of FIN. Test both text and binary restarts while preserving valid interleaved control frames.
-- **Fix with:** root-cause
-- **Effort:** S (hours)
-
 ### H12T-3 · P2 · Blocking TLS setup can outlive its connection timeout
 
 - **Area:** Errors
