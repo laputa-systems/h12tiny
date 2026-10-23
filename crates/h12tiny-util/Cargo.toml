@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "Protocol-neutral HTTP body conveniences for h12tiny"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
 json = ["dep:miniserde"]

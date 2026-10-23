@@ -6,6 +6,7 @@ rust-version = "1.89"
 description = "Direct-origin HTTP client for h12tiny"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
 http1 = ["dep:async-io", "dep:async-net", "hyper/client", "hyper/http1"]
