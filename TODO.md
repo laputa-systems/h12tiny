@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 9
 
-### H12T-3 · P2 · Blocking TLS setup can outlive its connection timeout
-
-- **Area:** Errors
-- **Where:** `crates/h12tiny-client-sync/src/lib.rs:166`, `crates/h12tiny-client-sync/src/lib.rs:226`, `tests/client_sync_tls.rs:94`
-- **Problem:** `connect_timeout` promises to bound the TLS handshake, but `complete_io` receives a socket with a fresh timeout for each read and write. A real-client probe trickled a valid Rustls handshake flight in 40 ms fragments with a 100 ms timeout. The request remained pending after 180 ms and returned a response-read error only after peer closure at 879 ms. The existing slow-TLS test checks dispatch after setup, leaving this handshake deadline unchecked.
-- **Recommendation:** Use one monotonic deadline for TLS negotiation and recalculate remaining time before each socket operation, reusing the dispatch socket approach where suitable. Add a trickled-handshake regression that expects the timeout error before peer closure.
-- **Fix with:** root-cause
-- **Effort:** S (hours)
-
 ### H12T-4 · P2 · Raw request handlers cannot classify body-limit failures
 
 - **Area:** Errors

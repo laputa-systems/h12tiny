@@ -167,17 +167,24 @@ impl Client {
     fn connect_tls(&self, host: String, port: u16) -> Result<Connection, Error> {
         let mut stream = connect_tcp(&host, port, self.connect_timeout)
             .map_err(|error| Error::from_io(ErrorKind::Connect, error))?;
-        stream
-            .set_read_timeout(self.connect_timeout)
-            .and_then(|()| stream.set_write_timeout(self.connect_timeout))
+        let deadline = DispatchDeadline::start(self.connect_timeout)
             .map_err(|error| Error::from_io(ErrorKind::Tls, error))?;
         let server_name = rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|_| Error::with_source(ErrorKind::Tls, InvalidServerName(host.clone())))?;
         let mut session = rustls::ClientConnection::new(self.tls.clone(), server_name)
             .map_err(|error| Error::with_source(ErrorKind::Tls, error))?;
-        session
-            .complete_io(&mut stream)
-            .map_err(|error| Error::from_io(ErrorKind::Tls, error))?;
+        {
+            let mut socket = DispatchSocket {
+                stream: &mut stream,
+                deadline,
+            };
+            session
+                .complete_io(&mut socket)
+                .map_err(|error| Error::from_io(ErrorKind::Tls, error))?;
+            deadline
+                .remaining_now()
+                .map_err(|error| Error::from_io(ErrorKind::Tls, error))?;
+        }
         match session.alpn_protocol() {
             Some(b"http/1.1") | None => {}
             Some(protocol) => {

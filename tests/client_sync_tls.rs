@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use h12tiny::client_sync::Client;
+use h12tiny::client_sync::{Client, ErrorKind};
 use http::Request;
 
 fn fixture_server_config() -> rustls::ServerConfig {
@@ -158,4 +158,72 @@ fn sync_client_timeout_covers_slow_fragments_inside_one_tls_record() {
     let _ = stop.send(());
     server.join().expect("TLS fixture should finish");
     assert!(error.is_timeout());
+}
+
+#[test]
+fn sync_client_connect_timeout_bounds_trickled_tls_handshake() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("TLS fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("TLS fixture should expose its address");
+    let (stop, wait_for_stop) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("sync client should connect");
+        stream
+            .set_nodelay(true)
+            .expect("TLS fixture should disable Nagle buffering");
+        let mut config = fixture_server_config();
+        config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let mut session = rustls::ServerConnection::new(Arc::new(config))
+            .expect("fixture server configuration should be valid");
+        while !session.wants_write() {
+            session
+                .read_tls(&mut stream)
+                .expect("TLS client hello should read");
+            session
+                .process_new_packets()
+                .expect("TLS client hello should process");
+        }
+        let mut handshake = Vec::new();
+        while session.wants_write() {
+            session
+                .write_tls(&mut handshake)
+                .expect("TLS server flight should encrypt");
+        }
+
+        let chunk_size = handshake.len().div_ceil(4);
+        for chunk in handshake.chunks(chunk_size) {
+            if stream.write_all(chunk).is_err() {
+                return;
+            }
+            match wait_for_stop.recv_timeout(Duration::from_millis(60)) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    });
+
+    let request = Request::builder()
+        .uri(format!("https://localhost:{}/slow-handshake", address.port()))
+        .body(Vec::new())
+        .expect("request should be valid");
+    let result = Client::builder()
+        .connect_timeout(Duration::from_millis(150))
+        .tls_config(fixture_client_config())
+        .build()
+        .request(request);
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("the TLS handshake must share the connection deadline"),
+    };
+    let _ = stop.send(());
+    server
+        .join()
+        .expect("the bounded TLS fixture should finish");
+    assert_eq!(
+        error.kind(),
+        ErrorKind::Timeout,
+        "trickled TLS handshake returned {:?}",
+        error.kind()
+    );
 }
