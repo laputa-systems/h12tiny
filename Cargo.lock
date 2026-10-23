@@ -617,8 +617,8 @@ name = "laputa-fastwebsockets-futures-lite"
 version = "0.10.0"
 dependencies = [
  "bytes",
- "fastrand",
  "futures-lite",
+ "getrandom 0.3.4",
  "simdutf8",
  "thiserror",
 ]

@@ -421,7 +421,7 @@ impl WriteHalf {
     S: AsyncWrite + Unpin,
   {
     if self.role == Role::Client && self.auto_apply_mask {
-      frame.mask();
+      frame.mask()?;
     }
 
     if self.closed {

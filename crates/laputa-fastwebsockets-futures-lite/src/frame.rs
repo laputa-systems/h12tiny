@@ -243,14 +243,18 @@ impl<'f> Frame<'f> {
     simdutf8::basic::from_utf8(&self.payload).is_ok()
   }
 
-  pub fn mask(&mut self) {
+  /// Applies the masking key, acquiring one from the OS when absent.
+  /// Entropy acquisition errors leave the frame unchanged.
+  pub fn mask(&mut self) -> std::io::Result<()> {
     if let Some(mask) = self.mask {
       crate::mask::unmask(self.payload.to_mut(), mask);
     } else {
-      let mask: [u8; 4] = fastrand::u32(..).to_ne_bytes();
+      let mut mask = [0; 4];
+      getrandom::fill(&mut mask)?;
       crate::mask::unmask(self.payload.to_mut(), mask);
       self.mask = Some(mask);
     }
+    Ok(())
   }
 
   /// Unmasks the frame payload in-place. This method does nothing if the frame is not masked.

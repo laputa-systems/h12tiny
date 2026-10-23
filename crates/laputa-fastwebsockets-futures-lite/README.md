@@ -17,6 +17,8 @@ Both readers take a callback that sends automatic pong and close replies
 through the writer. Use `WebSocketWrite::write_frame` and `flush` to send frames.
 Canceling a read while it waits for input bytes leaves the partial frame buffered
 for the next read.
+Client writers use OS entropy for masking and return an I/O error if entropy
+acquisition fails. Direct `Frame::mask` calls return `std::io::Result<()>`.
 
 This fork has no `upgrade`, `handshake`, or Axum integration features.
 For an HTTP server handshake and upgraded transport, use h12tiny's
