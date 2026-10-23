@@ -18,7 +18,8 @@ workspace checks below are the broader integration gates.
   Miri.
 - `sh scripts/check-msrv.sh` checks the h12tiny component MSRVs listed in that
   script across their supported feature selections.
-- H2: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --lib`.
+- H2 unit tests: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --lib`.
+- H2 flow control: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --test flow_control_futures`.
 - Hyper: `cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full`.
 - fastwebsockets: run `cargo test --all-features` from `crates/laputa-fastwebsockets-futures-lite`.
 
@@ -33,8 +34,10 @@ dependency policy on macOS and Linux. A separate Linux job checks the
 declared minimum compiler versions. The fork packages are excluded from the
 h12tiny Cargo workspace, so run their commands above when changing fork code.
 The inherited Hyper and H2 Tokio integration harnesses require adaptation
-before they can exercise the futures-I/O forks. The H2 library check runs
-its unit tests, not that integration harness.
+before they can exercise the futures-I/O forks. The focused H2 flow-control
+test uses a futures-I/O transport and checks both `WINDOW_UPDATE` frames after
+capacity release, then reads the next data frame. The H2 unit-test command
+runs library tests, not the inherited integration crate.
 
 The pinned nightly is the development toolchain; see the
 [current compiler requirements](../README.md#add-it) for consumers.

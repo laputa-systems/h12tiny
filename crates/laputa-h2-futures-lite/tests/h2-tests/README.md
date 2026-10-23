@@ -2,5 +2,7 @@
 
 This separate crate uses `h2-support` and the fork's `unstable` feature.
 Its inherited Tokio transports require adaptation to the fork's futures-I/O
-traits before these tests can run. The supported H2 library unit-test command
-is listed in [verification](../../../../docs/verification.md).
+traits before these tests can run. The focused futures-I/O flow-control
+regression is in [`../flow_control_futures.rs`](../flow_control_futures.rs).
+Run it with the H2 flow-control command in
+[verification](../../../../docs/verification.md).
