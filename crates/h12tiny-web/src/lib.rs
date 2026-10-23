@@ -287,36 +287,6 @@ impl fmt::Display for BodyLimitExceeded {
 
 impl StdError for BodyLimitExceeded {}
 
-#[derive(Debug)]
-struct LimitedBodyError {
-    limit: Option<BodyLimitExceeded>,
-    message: String,
-}
-
-impl LimitedBodyError {
-    fn inner<E: fmt::Display>(error: E) -> Self {
-        Self {
-            limit: None,
-            message: error.to_string(),
-        }
-    }
-
-    fn limit(error: BodyLimitExceeded) -> Self {
-        Self {
-            limit: Some(error),
-            message: error.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for LimitedBodyError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl StdError for LimitedBodyError {}
-
 struct LimitedBody<B> {
     inner: B,
     limit: usize,
@@ -336,10 +306,10 @@ impl<B> LimitedBody<B> {
 impl<B> Body for LimitedBody<B>
 where
     B: Body<Data = Bytes> + Unpin,
-    B::Error: fmt::Display,
+    B::Error: Into<BoxError>,
 {
     type Data = Bytes;
-    type Error = LimitedBodyError;
+    type Error = BoxError;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -355,10 +325,11 @@ where
                     let next = self.received.saturating_add(data.len());
                     if next > self.limit {
                         self.received = next;
-                        Poll::Ready(Some(Err(LimitedBodyError::limit(BodyLimitExceeded {
+                        let error: BoxError = Box::new(BodyLimitExceeded {
                             limit: self.limit,
                             received: next,
-                        }))))
+                        });
+                        Poll::Ready(Some(Err(error)))
                     } else {
                         self.received = next;
                         Poll::Ready(Some(Ok(Frame::data(data))))
@@ -366,7 +337,7 @@ where
                 }
                 Err(frame) => Poll::Ready(Some(Ok(frame))),
             },
-            Some(Err(error)) => Poll::Ready(Some(Err(LimitedBodyError::inner(error)))),
+            Some(Err(error)) => Poll::Ready(Some(Err(error.into()))),
             None => Poll::Ready(None),
         }
     }
@@ -555,10 +526,9 @@ fn body_limit_from_collection(
     error: &h12tiny_util::BodyCollectionError<BoxError>,
 ) -> Option<BodyLimitExceeded> {
     match error {
-        h12tiny_util::BodyCollectionError::Body(error) => error
-            .downcast_ref::<LimitedBodyError>()
-            .and_then(|error| error.limit)
-            .or_else(|| error.downcast_ref::<BodyLimitExceeded>().copied()),
+        h12tiny_util::BodyCollectionError::Body(error) => {
+            error.downcast_ref::<BodyLimitExceeded>().copied()
+        }
         h12tiny_util::BodyCollectionError::LimitExceeded(error) => Some(BodyLimitExceeded {
             limit: error.limit(),
             received: error.received(),
@@ -2406,6 +2376,68 @@ mod tests {
             .with_state("state".to_owned());
         let response = block_on(router.call(request));
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn raw_request_handler_can_classify_body_limit_errors() {
+        let router = Router::<()>::new().route(
+            "/upload",
+            post(|request: Request| async move {
+                match request.into_body().collect().await {
+                    Ok(_) => StatusCode::OK.into_response(),
+                    Err(error) => match error.downcast_ref::<BodyLimitExceeded>() {
+                        Some(limit) => (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            format!("{}:{}", limit.limit(), limit.received()),
+                        )
+                            .into_response(),
+                        None => StatusCode::BAD_REQUEST.into_response(),
+                    },
+                }
+            })
+            .body_limit(1),
+        );
+        let response = block_on(router.call(
+            Request::post("/upload")
+                .body(h12tiny_util::bytes_body("123"))
+                .unwrap(),
+        ));
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            &block_on(response.into_body().collect()).unwrap().to_bytes()[..],
+            b"1:3"
+        );
+    }
+
+    #[test]
+    fn raw_request_handler_can_inspect_typed_body_errors() {
+        let router = Router::<()>::new().route(
+            "/upload",
+            post(|request: Request| async move {
+                match request.into_body().collect().await {
+                    Ok(_) => StatusCode::OK,
+                    Err(error) => match error.downcast_ref::<std::io::Error>() {
+                        Some(error)
+                            if error.kind() == std::io::ErrorKind::ConnectionReset =>
+                        {
+                            StatusCode::BAD_GATEWAY
+                        }
+                        _ => StatusCode::BAD_REQUEST,
+                    },
+                }
+            })
+            .body_limit(16),
+        );
+        let body = h12tiny_util::frame_stream_body(futures_util::stream::iter([
+            Err::<Frame<Bytes>, _>(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "transport failure",
+            )),
+        ]));
+        let response = block_on(router.call(
+            Request::post("/upload").body(body).unwrap(),
+        ));
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[test]

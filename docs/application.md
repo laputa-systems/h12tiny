@@ -19,9 +19,11 @@ server connections.
 Router body limits and timeouts apply to routes present when configured,
 including only methods present in each method router; later additions and the
 fallback keep their own settings. Built-in byte and JSON extractors return 413
-when a body limit is exceeded; raw request handlers receive a body error and
-own its response mapping. Handler deadlines produce 408 while extracting and
-constructing the response, and do not cover streaming response bodies.
+when a body limit is exceeded. Raw request handlers receive a body error they
+can downcast to `BodyLimitExceeded`; other body errors retain their original
+concrete type, and raw handlers own response mapping. Handler deadlines produce
+408 while extracting and constructing the response, and do not cover streaming
+response bodies.
 The fallback handles unmatched paths; a matched path with an unsupported
 method returns 405 with an `Allow` header listing the route's registered
 methods. Router clones share an immutable route table and matcher; builder

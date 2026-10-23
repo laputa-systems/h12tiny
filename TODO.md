@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 9
 
-### H12T-4 · P2 · Raw request handlers cannot classify body-limit failures
-
-- **Area:** Errors
-- **Where:** `crates/h12tiny-web/src/lib.rs:291`, `crates/h12tiny-web/src/lib.rs:318`, `crates/h12tiny-web/src/lib.rs:358`, `crates/h12tiny-web/src/lib.rs:554`
-- **Problem:** The router erases limit failures into private `LimitedBodyError`, which exposes neither its public `BodyLimitExceeded` nor an error source. It also converts underlying body failures to strings. Built-in extractors can inspect the private wrapper, while raw request handlers cannot reliably distinguish a 413 case from a transport failure. A public-API probe exceeded a one-byte route limit with three bytes: downcasting the returned error to `BodyLimitExceeded` failed, and no source was available.
-- **Recommendation:** Preserve a public structured limit error and the original body error through type erasure. Verify a raw handler can classify and inspect a limit breach and still inspect an underlying transport error, without parsing Display text.
-- **Fix with:** error-model
-- **Effort:** S (hours)
-
 ### H12T-5 · P2 · Cancelling a WebSocket read loses parser state
 
 - **Area:** Concurrency
