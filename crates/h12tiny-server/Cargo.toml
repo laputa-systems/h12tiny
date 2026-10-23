@@ -6,6 +6,7 @@ rust-version = "1.89"
 description = "Runtime-neutral HTTP server primitives for h12tiny"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
 http1 = ["hyper/server", "hyper/http1"]

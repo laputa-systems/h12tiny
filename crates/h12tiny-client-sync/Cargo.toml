@@ -6,6 +6,7 @@ rust-version = "1.89"
 description = "Blocking direct-origin HTTP/1.1 client for h12tiny"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
 tls = ["dep:rustls", "dep:rustls-graviola", "dep:webpki-roots"]

@@ -6,6 +6,7 @@ rust-version = "1.89"
 description = "Small application routing adapter for h12tiny"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
 json = ["h12tiny-util/json", "dep:miniserde"]

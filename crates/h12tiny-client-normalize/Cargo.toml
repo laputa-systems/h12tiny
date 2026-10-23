@@ -6,5 +6,6 @@ rust-version = "1.85"
 description = "Direct-origin HTTP request normalization shared by h12tiny clients"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [dependencies]
 http = { workspace = true }

@@ -6,6 +6,7 @@ rust-version = "1.85"
 description = "Runtime-neutral low-level facilities for h12tiny"
 license = "MIT"
 
+repository = "https://github.com/laputa-systems/h12tiny"
 [dependencies]
 async-io = { workspace = true }
 futures-io = { workspace = true }
