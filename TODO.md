@@ -10,15 +10,6 @@ Next: 9
 - **Fix with:** lifecycle-concurrency
 - **Effort:** M (days)
 
-### H12T-6 · P3 · Vectored WebSocket writes spin when the writer returns zero
-
-- **Area:** Errors
-- **Where:** `crates/laputa-fastwebsockets-futures-lite/src/frame.rs:312`, `crates/laputa-fastwebsockets-futures-lite/src/frame.rs:318`, `crates/laputa-fastwebsockets-futures-lite/src/lib.rs:434`
-- **Problem:** A zero-byte vectored write leaves progress unchanged and immediately retries. A public-API probe supplied a legal `AsyncWrite` returning `Ok(0)` and observed eleven calls within one poll before an injected error stopped it. An unbounded writer would spin and prevent cancellation. The default writer selects this path for payloads above 1024 bytes. No real TCP zero-write case was reproduced, so the demonstrated impact is on generic writers accepted by the fork.
-- **Recommendation:** Return `io::ErrorKind::WriteZero` when a nonempty vectored write makes no progress. Test zero progress before and partway through the header, plus successful partial writes.
-- **Fix with:** error-model
-- **Effort:** S (hours)
-
 ### H12T-7 · P3 · Client WebSocket masks use a noncryptographic generator
 
 - **Area:** Security

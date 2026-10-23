@@ -309,19 +309,20 @@ impl<'f> Frame<'f> {
 
     let mut b = [IoSlice::new(&head[..size]), IoSlice::new(&self.payload)];
 
-    let mut n = stream.write_vectored(&b).await?;
-    if n == total {
-      return Ok(());
-    }
-
-    // Slightly more optimized than (unstable) write_all_vectored for 2 iovecs.
-    while n <= size {
+    let mut n = 0;
+    while n < size {
       b[0] = IoSlice::new(&head[n..size]);
-      n += stream.write_vectored(&b).await?;
+      let written = stream.write_vectored(&b).await?;
+      if written == 0 {
+        return Err(std::io::Error::new(
+          std::io::ErrorKind::WriteZero,
+          "failed to write WebSocket frame",
+        ));
+      }
+      n += written;
     }
 
-    // Header out of the way.
-    if n < total && n > size {
+    if n < total {
       stream.write_all(&self.payload[n - size..]).await?;
     }
 
