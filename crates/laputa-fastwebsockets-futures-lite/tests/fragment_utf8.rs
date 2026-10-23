@@ -25,6 +25,29 @@ fn noop_send(
 }
 
 #[test]
+fn fragmented_text_rejects_incomplete_utf8_at_fin() {
+  futures_lite::future::block_on(async {
+    for (first, last) in [
+      (&b"abc\xf0\x9f"[..], &b""[..]),
+      (&b"abc"[..], &b"\xf0\x9f"[..]),
+    ] {
+      let mut data = masked_frame(false, OpCode::Text, first);
+      data.extend(masked_frame(true, OpCode::Continuation, last));
+      let (reader, _) = after_handshake_split(
+        Cursor::new(data),
+        futures_lite::io::sink(),
+        Role::Server,
+      );
+      let mut messages = fws::FragmentCollectorRead::new(reader);
+      assert!(matches!(
+        messages.read_frame(&mut noop_send).await,
+        Err(fws::WebSocketError::InvalidUTF8)
+      ));
+    }
+  });
+}
+
+#[test]
 fn fragmented_text_with_partial_utf8() {
   futures_lite::future::block_on(async {
     let mut frame1_payload = b"Hello ".to_vec();

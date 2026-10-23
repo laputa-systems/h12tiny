@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 9
 
-### H12T-1 · P2 · Fragmented text silently drops an incomplete UTF-8 suffix
-
-- **Area:** Data
-- **Where:** `crates/laputa-fastwebsockets-futures-lite/src/fragment.rs:185`, `crates/laputa-fastwebsockets-futures-lite/src/fragment.rs:193`, `crates/h12tiny-web/src/lib.rs:2240`
-- **Problem:** A final text continuation can leave incomplete UTF-8 in `pending`, then return only the validated buffer as a successful message. A public-API probe sent masked nonfinal Text(`abc`) followed by final Continuation(`[F0,9F]`), and received `Ok("abc")`. This silently changes malformed input rather than rejecting it. The default h12tiny WebSocket reader uses this collector.
-- **Recommendation:** Reject FIN when a text message still has pending UTF-8 bytes. Keep a regression covering incomplete suffixes both in the initial fragment and in the final continuation, alongside valid split code points.
-- **Fix with:** root-cause
-- **Effort:** S (hours)
-
 ### H12T-2 · P2 · A new fragmented message replaces unfinished content
 
 - **Area:** Data

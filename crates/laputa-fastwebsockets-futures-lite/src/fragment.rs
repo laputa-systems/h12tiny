@@ -191,6 +191,9 @@ impl Fragments {
           }
 
           if frame.fin {
+            if !pending.is_empty() {
+              return Err(WebSocketError::InvalidUTF8);
+            }
             return Ok(Some(Frame::new(
               true,
               self.opcode,
