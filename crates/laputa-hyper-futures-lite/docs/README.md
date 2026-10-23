@@ -1,3 +1,5 @@
-# Developing hyper
+# Upstream Hyper documents
 
-This is a set of documents outline how hyper is developed, how to contribute or get involved, various processes we use, and internal design explanations.
+These documents describe Hyperium's upstream design and contribution process.
+Local fork verification and release procedures live in h12tiny's
+[verification guide](../../../docs/verification.md).

@@ -1,5 +1,5 @@
-# h2 test support
+# H2 test support
 
-This crate includes utilities for writing h2 tests. This is broken up into a
-separate crate because it requires the `unstable` feature flag and to enable
-`tower-h2` to use the same helpers.
+This crate contains the inherited integration test helpers and enables H2's
+`unstable` feature. The Tokio transport helpers require adaptation before
+use with this fork. See the [integration test notes](../h2-tests/README.md).

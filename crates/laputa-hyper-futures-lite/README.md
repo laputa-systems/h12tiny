@@ -1,44 +1,25 @@
-# [hyper](https://hyper.rs)
+# Hyper for futures-I/O
 
-[![crates.io](https://img.shields.io/crates/v/laputa-hyper-futures-lite.svg)](https://crates.io/crates/laputa-hyper-futures-lite)
-[![Released API docs](https://docs.rs/laputa-hyper-futures-lite/badge.svg)](https://docs.rs/laputa-hyper-futures-lite)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![CI](https://github.com/hyperium/hyper/workflows/CI/badge.svg)](https://github.com/hyperium/hyper/actions?query=workflow%3ACI)
-[![Discord chat][discord-badge]][discord-url]
+`laputa-hyper-futures-lite` is a low-level HTTP/1 and HTTP/2 client and server
+fork. HTTP/2 uses the local `laputa-h2-futures-lite` fork. Production code
+does not require Tokio.
 
-A protective and efficient HTTP library for all.
+```toml
+[dependencies]
+hyper = { package = "laputa-hyper-futures-lite", version = "=1.12.0-beta.0", features = ["client", "http1"] }
+```
 
-- HTTP/1 and HTTP/2
-- Asynchronous design
-- Leading in performance
-- Tested and **correct**
-- Extensive production use
-- Client and Server APIs
+Select `client`, `server`, `http1`, and `http2` as needed, or use `full`
+for all four. Defaults are empty. Applications supply transports implementing
+Hyper's runtime I/O traits and any required executor and timer adapters.
+See the [API documentation](https://docs.rs/laputa-hyper-futures-lite).
 
-**Get started** by looking over the [guides](https://hyper.rs/guides/1/).
-
-## "Low-level"
-
-hyper is a relatively low-level library, meant to be a building block for
-libraries and applications.
-
-If you are looking for a convenient HTTP client, then you may wish to consider
-[reqwest](https://github.com/seanmonstar/reqwest).
-
-If you are not sure what HTTP server to choose, then you may want to consider
-[axum](https://github.com/tokio-rs/axum) or
-[warp](https://github.com/seanmonstar/warp), the latter taking a more functional
-approach. Both are built on top of this library.
-
-## Contributing
-
-To get involved, take a look at [CONTRIBUTING](CONTRIBUTING.md).
-
-If you prefer chatting, there is an active community in the [Discord server][discord-url].
+For futures-I/O adapters, connection establishment, pooling, or listener
+lifecycle, use [h12tiny](../../README.md). Its [examples](../../examples/)
+exercise this fork with futures-I/O transports.
+The inherited Hyper [examples](examples/README.md) and Tokio test harness
+require adaptation before use with this fork.
 
 ## License
 
-hyper is provided under the MIT license. See [LICENSE](LICENSE).
-
-[discord-badge]: https://img.shields.io/discord/500028886025895936.svg?logo=discord
-[discord-url]: https://discord.gg/kkwpueZ
+MIT. See [LICENSE](LICENSE).

@@ -15,9 +15,6 @@
 //!
 //! - HTTP/1 and HTTP/2
 //! - Asynchronous design
-//! - Leading in performance
-//! - Tested and **correct**
-//! - Extensive production use
 //! - [Client](client/index.html) and [Server](server/index.html) APIs
 //!
 //! If just starting out, **check out the [Guides](https://hyper.rs/guides/1/)

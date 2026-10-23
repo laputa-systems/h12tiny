@@ -1,9 +1,6 @@
-# Minimum Supported Rust Version (MSRV)
+# Minimum supported Rust version
 
-hyper's current policy is to always support a Rust version at least 6 months
-old. That is, a compiler version released within the last 6 months can compile
-hyper. It is possible that an older compiler can work, but that is not
-guaranteed. We try to increase the MSRV responsibly, only when a significant
-new feature is needed.
-
-The current MSRV is: **1.63**.
+The fork manifest declares Rust 1.63. The local verification procedure checks
+Hyper with the repository's pinned nightly, so it does not establish that
+minimum with the resolved dependencies. h12tiny's separate consumer compiler
+requirements and checks are listed in [verification](../../../docs/verification.md).

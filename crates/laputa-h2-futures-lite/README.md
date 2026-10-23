@@ -1,58 +1,34 @@
-# H2
+# H2 for futures-I/O
 
-A Tokio aware, HTTP/2 client & server implementation for Rust.
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Crates.io](https://img.shields.io/crates/v/laputa-h2-futures-lite.svg)](https://crates.io/crates/laputa-h2-futures-lite)
-[![Documentation](https://docs.rs/laputa-h2-futures-lite/badge.svg)][dox]
-
-More information about this crate can be found in the [crate documentation][dox].
-
-[dox]: https://docs.rs/laputa-h2-futures-lite
-
-## Features
-
-* Client and server HTTP/2 implementation.
-* Implements the full HTTP/2 specification.
-* Passes [h2spec](https://github.com/summerwind/h2spec).
-* Focus on performance and correctness.
-* Built on [Tokio](https://tokio.rs).
-
-## Non goals
-
-This crate is intended to only be an implementation of the HTTP/2
-specification. It does not handle:
-
-* Managing TCP connections
-* HTTP 1.0 upgrade
-* TLS
-* Any feature not described by the HTTP/2 specification.
-
-This crate is now used by [hyper](https://github.com/hyperium/hyper), which will provide all of these features.
-
-## Usage
-
-To use `h2`, first add this to your `Cargo.toml`:
+`laputa-h2-futures-lite` is an asynchronous HTTP/2 client and server fork
+using `futures_io::AsyncRead` and `AsyncWrite`. Applications supply an
+established transport, TLS and ALPN policy, and an executor to drive the
+connection future.
 
 ```toml
 [dependencies]
-h2 = { package = "laputa-h2-futures-lite", version = "0.4" }
+h2 = { package = "laputa-h2-futures-lite", version = "=0.4.20-beta.0" }
 ```
 
-Next, add this to your crate:
+Pass a futures-I/O transport to `client::handshake` or `server::handshake`.
+The client handshake returns a request sender and a connection future that
+must be polled while requests are active. The crate exposes stream and
+connection flow control. See the
+[API documentation](https://docs.rs/laputa-h2-futures-lite).
 
-```rust
-extern crate h2;
+The crate owns HTTP/2 framing, HPACK, and stream state. Applications own
+TCP establishment and protocol selection. For a client or server with
+those policies included, use [h12tiny](../../README.md).
 
-use h2::server::Connection;
+The optional `stream` feature adds futures Stream implementations, and
+`tracing` enables instrumentation. `unstable` exposes APIs without compatibility
+guarantees.
 
-fn main() {
-    // ...
-}
-```
+The examples and integration harness retain upstream Tokio code and require
+adaptation to this fork's I/O traits. The supported local checks are listed in
+[verification](../../docs/verification.md). Upstream h2spec claims do not
+establish conformance for this adaptation.
 
-## FAQ
+## License
 
-**Is this an embedded Java SQL database engine?**
-
-[No](https://www.h2database.com).
+MIT. See [LICENSE](LICENSE).

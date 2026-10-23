@@ -1,7 +1,9 @@
 # Clients
 
-Both clients make direct-origin requests from absolute `http` or `https`
-URIs. They share request normalization, but have separate transport contracts.
+Both clients require absolute URIs and share request normalization.
+The default async connector and blocking client accept `http` and `https`.
+A custom async `Dialer` receives the origin URI unchanged and owns scheme
+and transport policy. The transports have separate lifecycle contracts.
 
 ## Futures-I/O client
 

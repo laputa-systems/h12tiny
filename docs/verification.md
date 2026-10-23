@@ -32,6 +32,9 @@ CI also checks workspace Clippy, feature isolation, and the full normal
 dependency policy on macOS and Linux. A separate Linux job checks the
 declared minimum compiler versions. The fork packages are excluded from the
 h12tiny Cargo workspace, so run their commands above when changing fork code.
+The inherited Hyper and H2 Tokio integration harnesses require adaptation
+before they can exercise the futures-I/O forks. The H2 library check runs
+its unit tests, not that integration harness.
 
 The pinned nightly is the development toolchain; see the
 [current compiler requirements](../README.md#add-it) for consumers.

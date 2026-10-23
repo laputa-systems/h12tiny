@@ -16,8 +16,6 @@
 //! `futures-lite::io` traits instead of `tokio::io`.
 //!
 //! It provides a minimal, fast WebSocket frame parser and server implementation.
-//!
-//! Passes the _Autobahn|TestSuite_ and fuzzed with LLVM's _libfuzzer_.
 
 mod close;
 mod error;

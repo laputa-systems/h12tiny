@@ -1,23 +1,6 @@
-# h2 integration tests
+# H2 integration test sources
 
-This crate includes the h2 integration tests. These tests exist in a separate
-crate because they transitively depend on the `unstable` feature flag via
-`h2-support`. Due to a cargo limitation, if these tests existed as part of the
-`h2` crate, it would require that `h2-support` be published to crates.io and
-force the `unstable` feature flag to always be on.
-
-## Setup
-
-Install honggfuzz for cargo:
-
-```rust
-cargo install honggfuzz
-```
-
-## Running
-
-From within this directory, run the following command:
-
-```
-HFUZZ_RUN_ARGS="-t 1" cargo hfuzz run h2-fuzz
-```
+This separate crate uses `h2-support` and the fork's `unstable` feature.
+Its inherited Tokio transports require adaptation to the fork's futures-I/O
+traits before these tests can run. The supported H2 library unit-test command
+is listed in [verification](../../../../docs/verification.md).
