@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 9
 
-### H12T-5 · P2 · Cancelling a WebSocket read loses parser state
-
-- **Area:** Concurrency
-- **Where:** `crates/laputa-fastwebsockets-futures-lite/src/lib.rs:337`, `crates/laputa-fastwebsockets-futures-lite/src/lib.rs:339`, `crates/laputa-fastwebsockets-futures-lite/src/lib.rs:388`, `crates/h12tiny-web/src/lib.rs:2118`
-- **Problem:** Frame headers leave the persistent buffer before subsequent reads await. The decoded header exists only in the future, so dropping a pending read loses it. A controlled public-API probe delivered the first two bytes of a valid masked binary frame, cancelled the pending read, then delivered the rest. The next read returned `UnmaskedFrame`. Applications racing the default h12tiny reader against timers or outbound work can corrupt an otherwise valid session. The API does not state a cancellation restriction.
-- **Recommendation:** Keep the frame header buffered until the full frame can be committed, or store parsing progress in `ReadHalf`. Test cancellation while awaiting extended length, mask, and payload bytes, followed by successful resumption of the original frame.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** M (days)
-
 ### H12T-7 · P3 · Client WebSocket masks use a noncryptographic generator
 
 - **Area:** Security

@@ -138,6 +138,8 @@ impl<'f, S> WebSocketRead<S> {
   }
 
   /// Reads a frame from the stream.
+  /// Canceling while this future waits for input bytes leaves the partial frame
+  /// buffered for the next call.
   pub async fn read_frame<R, E>(
     &mut self,
     send_fn: &mut impl FnMut(Frame<'f>) -> R,
@@ -334,19 +336,21 @@ impl ReadHalf {
       _ => 0,
     };
 
-    self.buffer.advance(2);
-    while self.buffer.remaining() < extra + masked as usize * 4 {
+    let header_len = 2 + extra + masked as usize * 4;
+    while self.buffer.remaining() < header_len {
       eof!(read_buf(stream, &mut self.buffer).await?);
     }
 
     let payload_len: usize = match extra {
       0 => usize::from(length_code),
-      2 => self.buffer.get_u16() as usize,
+      2 => u16::from_be_bytes(self.buffer[2..4].try_into().unwrap()) as usize,
       #[cfg(target_pointer_width = "64")]
-      8 => self.buffer.get_u64() as usize,
+      8 => u64::from_be_bytes(self.buffer[2..10].try_into().unwrap()) as usize,
       // On 32bit systems, usize is only 4bytes wide so we must check for usize overflowing
       #[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
-      8 => match usize::try_from(self.buffer.get_u64()) {
+      8 => match usize::try_from(u64::from_be_bytes(
+        self.buffer[2..10].try_into().unwrap(),
+      )) {
         Ok(length) => length,
         Err(_) => return Err(WebSocketError::FrameTooLarge),
       },
@@ -354,7 +358,8 @@ impl ReadHalf {
     };
 
     let mask = if masked {
-      Some(self.buffer.get_u32().to_be_bytes())
+      let mask_start = 2 + extra;
+      Some(self.buffer[mask_start..mask_start + 4].try_into().unwrap())
     } else {
       None
     };
@@ -382,13 +387,12 @@ impl ReadHalf {
       return Err(WebSocketError::FrameTooLarge);
     }
 
-    // Reserve a bit more to try to get next frame header and avoid a syscall to read it next time
     self.buffer.reserve(payload_len + MAX_HEADER_SIZE);
-    while payload_len > self.buffer.remaining() {
+    while payload_len > self.buffer.remaining() - header_len {
       eof!(read_buf(stream, &mut self.buffer).await?);
     }
 
-    // if we read too much it will stay in the buffer, for the next call to this method
+    self.buffer.advance(header_len);
     let payload = self.buffer.split_to(payload_len);
     let frame = Frame::new(fin, opcode, mask, Payload::Bytes(payload));
     Ok(frame)
