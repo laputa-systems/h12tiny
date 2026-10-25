@@ -120,7 +120,6 @@ opt-level = 2
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+lto = "thin"
 panic = "abort"
-strip = true
+strip = false
