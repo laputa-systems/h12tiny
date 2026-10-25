@@ -6,12 +6,12 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_net::TcpListener;
 use bytes::Bytes;
 use futures_util::future;
-use h12tiny::client::Client;
+use h12tiny::client::{Client, DebugEvent, DebugEventLog};
 use h12tiny::io::FuturesIo;
 use h12tiny::runtime::BoxExecutor;
 use h12tiny::server::conn::auto;
@@ -195,7 +195,10 @@ fn concurrent_h1_requests_get_unique_connections_then_reuse_them() {
             }
         });
 
-        let client = Client::builder(SmolExecutor).build::<YieldingBody>();
+        let pool_events = DebugEventLog::default();
+        let mut builder = Client::builder(SmolExecutor);
+        builder.debug_event_log(pool_events.clone());
+        let client = builder.build::<YieldingBody>();
         let concurrent = (0..CONCURRENT).map(|request| {
             let client = client.clone();
             async move {
@@ -214,9 +217,27 @@ fn concurrent_h1_requests_get_unique_connections_then_reuse_them() {
         future::join_all(concurrent).await;
 
         // Unique H1 checkouts return to the pool from a driver task after the
-        // response body finishes. Let those wakeups settle before the warm
-        // sequential phase, then prove no additional socket is needed.
-        async_io::Timer::after(Duration::from_millis(20)).await;
+        // response body finishes. A fixed sleep cannot prove those returns
+        // completed: on a loaded executor the warm phase races them and each
+        // miss dials an extra socket. Wait for every concurrent checkout to
+        // check back in, then prove the warm phase needs no new socket.
+        let settle = Instant::now() + Duration::from_secs(10);
+        let mut pooled = 0;
+        while pooled < CONCURRENT {
+            if Instant::now() > settle {
+                panic!(
+                    "timed out waiting for {CONCURRENT} pooled returns, observed {pooled}: {:?}",
+                    pool_events.drain()
+                );
+            }
+            async_io::Timer::after(Duration::from_millis(1)).await;
+            pooled += pool_events
+                .drain()
+                .into_iter()
+                .filter(|event| matches!(event, DebugEvent::ConnectionPooled { .. }))
+                .count();
+        }
+        let settled = counters.snapshot().tcp_connections;
         for request in 0..CONCURRENT {
             let response = client
                 .request(
@@ -232,9 +253,9 @@ fn concurrent_h1_requests_get_unique_connections_then_reuse_them() {
         assert_eq!(
             counters.snapshot(),
             CounterSnapshot {
-                tcp_connections: CONCURRENT,
+                tcp_connections: settled,
                 tls_handshakes: 0,
-                h1_connections: CONCURRENT,
+                h1_connections: settled,
                 h2_sessions: 0,
                 logical_requests: CONCURRENT * 2,
             }
