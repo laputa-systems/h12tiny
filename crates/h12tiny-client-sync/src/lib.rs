@@ -1452,8 +1452,22 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).unwrap();
+            // Drain the whole request head before responding. The client
+            // writes the head with several small writes, so a single read
+            // usually returns a prefix; responding and closing on a prefix
+            // resets the connection while the client is still sending.
+            let mut request = Vec::new();
+            loop {
+                let mut input = [0_u8; 1024];
+                let read = stream.read(&mut input).unwrap();
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&input[..read]);
+                if super::find_head_end(&request).is_some() {
+                    break;
+                }
+            }
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx")
                 .unwrap();
@@ -1711,8 +1725,22 @@ mod tests {
                 b"HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 6\r\n\r\ndenied",
             ] {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut request = [0_u8; 1024];
-                let _ = stream.read(&mut request).unwrap();
+                // Drain the whole request head before responding. The client
+                // writes the head with several small writes, so a single read
+                // usually returns a prefix; responding and closing on a prefix
+                // resets the connection while the client is still sending.
+                let mut request = Vec::new();
+                loop {
+                    let mut input = [0_u8; 1024];
+                    let read = stream.read(&mut input).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&input[..read]);
+                    if super::find_head_end(&request).is_some() {
+                        break;
+                    }
+                }
                 stream.write_all(response).unwrap();
             }
         });

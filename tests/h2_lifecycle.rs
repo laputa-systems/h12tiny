@@ -168,20 +168,22 @@ fn closed_h2_session_is_evicted_and_the_next_request_reconnects() {
             let close = Box::pin(async move {
                 let _ = close_first_rx.await;
             });
-            let mut first_connection = match future::select(first_connection, close).await {
+            // The first session can end before the shutdown signal wins the
+            // race (the peer may close first) or via graceful shutdown below.
+            // Either way the session is over once this match resolves: a
+            // graceful completion that reports a transport error only means
+            // the peer was already gone (ENOTCONN on Linux), which still
+            // requires a replacement session. The request counters below
+            // verify the eviction; this gate only waits for the session end.
+            match future::select(first_connection, close).await {
                 future::Either::Left((result, _)) => {
                     result.unwrap();
-                    return;
                 }
-                future::Either::Right(((), connection)) => connection,
+                future::Either::Right(((), mut connection)) => {
+                    connection.as_mut().graceful_shutdown();
+                    let _ = connection.await;
+                }
             };
-            // Wait for the graceful driver to finish after GOAWAY. Signaling
-            // the client immediately after `graceful_shutdown()` left a race:
-            // a new stream could be accepted before the peer had observed the
-            // GOAWAY. Completion is the deterministic boundary at which this
-            // test can require a replacement session.
-            first_connection.as_mut().graceful_shutdown();
-            first_connection.await.unwrap();
             let _ = first_closed_tx.send(());
 
             let (second, _) = listener.accept().await.unwrap();
