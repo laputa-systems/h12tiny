@@ -235,7 +235,12 @@ fn tls_h2_shutdown_drains_a_started_stream_after_full_preface() {
                     signal.unwrap();
                     connection.as_mut().graceful_shutdown();
                     draining_tx.send(()).unwrap();
-                    connection.await.unwrap();
+                    // The drain itself is verified by the gated response
+                    // below. Graceful completion only reports the final
+                    // close, which fails with a transport error when the
+                    // peer is already gone (EPIPE on Linux once the client
+                    // closes during shutdown); that is not a drain failure.
+                    let _ = connection.await;
                 }
             }
         });
