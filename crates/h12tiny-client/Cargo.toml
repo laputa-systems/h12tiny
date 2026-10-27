@@ -11,7 +11,7 @@ repository = "https://github.com/laputa-systems/h12tiny"
 default = []
 http1 = ["dep:async-io", "dep:async-net", "hyper/client", "hyper/http1"]
 http2 = ["dep:async-io", "dep:async-net", "hyper/client", "hyper/http2"]
-tls = ["dep:futures-rustls", "dep:rustls", "dep:rustls-graviola", "dep:webpki-roots"]
+tls = ["dep:futures-rustls", "dep:rustls", "dep:rustls-graviola", "dep:rustls-webpki", "dep:webpki-roots"]
 
 [dependencies]
 async-io = { workspace = true, optional = true }
@@ -27,6 +27,7 @@ http-body = { workspace = true }
 hyper = { workspace = true }
 rustls = { workspace = true, optional = true }
 rustls-graviola = { workspace = true, optional = true }
+rustls-webpki = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 
 [dev-dependencies]

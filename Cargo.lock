@@ -452,6 +452,7 @@ dependencies = [
  "laputa-hyper-futures-lite",
  "rustls",
  "rustls-graviola",
+ "rustls-webpki",
  "smol",
  "webpki-roots",
 ]
@@ -471,6 +472,7 @@ dependencies = [
  "http",
  "rustls",
  "rustls-graviola",
+ "rustls-webpki",
  "webpki-roots",
 ]
 
