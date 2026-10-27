@@ -1,6 +1,6 @@
 [package]
 name = "h12tiny-tls-system"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Operating-system TLS trust for h12tiny clients"
