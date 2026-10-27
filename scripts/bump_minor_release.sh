@@ -10,7 +10,8 @@
 # unexpected fails loudly before anything is edited.
 # One commit carries the release and each crate gets a <name>-v<version> tag.
 # Re-running after a partial publish finishes the remaining crates instead
-# of failing.
+# of failing. A missing registry login fails before any registry query or
+# file edit.
 
 set -eu
 LC_ALL=C
@@ -253,6 +254,34 @@ ensure_clean_tree() {
     working_changes=$(git status --porcelain=v1) || fail "could not inspect the working tree"
     [ -z "$working_changes" ] || fail "release requires a clean working tree"
 }
+
+ensure_registry_auth() {
+    # Preflight before any registry query or file edit: a missing login
+    # otherwise surfaces only at the first authenticated step, after several
+    # registry queries. Ownership of each published crate is still validated
+    # by the cargo owner loop below before anything is edited.
+    if [ -n "${CARGO_REGISTRY_TOKEN:-}" ] || [ -n "${CARGO_REGISTRIES_CRATES_IO_TOKEN:-}" ]; then
+        return 0
+    fi
+    if [ -n "${CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS:-}" ]; then
+        return 0
+    fi
+    cargo_home=${CARGO_HOME:-$HOME/.cargo}
+    for config in "$cargo_home/config.toml" "$cargo_home/config"; do
+        if [ -f "$config" ] && grep -q 'credential.provider' "$config" 2>/dev/null; then
+            return 0
+        fi
+    done
+    for credentials in "$cargo_home/credentials.toml" "$cargo_home/credentials"; do
+        if [ -f "$credentials" ] && grep -q '^[[:space:]]*token[[:space:]]*=' "$credentials" 2>/dev/null; then
+            return 0
+        fi
+    done
+    fail "no Cargo registry token found; run \`cargo login\` (or set CARGO_REGISTRY_TOKEN) before publishing"
+}
+
+# Fail fast without a registry login before any registry query or file edit.
+ensure_registry_auth
 
 # Derive the member manifests from the workspace so new crates are picked
 # up without editing this script.
