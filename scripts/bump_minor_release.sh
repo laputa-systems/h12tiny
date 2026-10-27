@@ -135,7 +135,9 @@ map_get() {
 registry_latest() {
     # Prints the latest registry version of $1, or nothing when the crate
     # has never been published. A failed query still fails loudly.
-    search_result=$(cargo search "$1" --limit 1) || fail "could not query the default Cargo registry"
+    # Standard error is captured so cargo's informational notes stay out of
+    # release output; it is reported when the query itself fails.
+    search_result=$(cargo search "$1" --limit 1 2>&1) || fail "could not query the default Cargo registry for $1: $search_result"
     printf '%s\n' "$search_result" | awk -v package_name="$1" '
         $1 == package_name && $2 == "=" && $3 ~ /^".+"$/ {
             version = substr($3, 2, length($3) - 2)
@@ -426,19 +428,18 @@ LEAVES=$(printf '%s\n' "$EDGES" | awk -v nodes="$PKG_SPACE" '
     }
 ')
 
+# Query the registry and check ownership crate by crate before the script
+# edits any release file. Ownership of a never-published name cannot be
+# queried; the publish step surfaces that instead. Checking ownership right
+# after each version query fails fast on a dead token instead of running
+# every query first. Cargo output is captured so successful checks stay
+# silent; failures report it.
 PUBLISHED=
 for name in $PKG_SPACE; do
     latest=$(registry_latest "$name")
     PUBLISHED="${PUBLISHED}${PUBLISHED:+$newline}$name=$latest"
-done
-
-# Cargo checks registry ownership before the script edits any release file.
-# Ownership of a never-published name cannot be queried; the publish step
-# surfaces that instead.
-for name in $PKG_SPACE; do
-    published=$(map_get "$PUBLISHED" "$name" "=") || fail "no registry state for $name"
-    if [ -n "$published" ]; then
-        cargo owner --list "$name"
+    if [ -n "$latest" ]; then
+        owner_output=$(cargo owner --list "$name" 2>&1) || fail "could not verify ownership of $name: $owner_output"
     fi
 done
 
