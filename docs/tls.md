@@ -14,7 +14,7 @@ and caller-supplied verifiers stay under caller control.
 | Platform | Default backend | Distrust handling |
 | --- | --- | --- |
 | Linux and other Unix | System PEM store via `rustls-native-certs`, verified with rustls-webpki and the explicit Graviola provider | Administrator removals take effect on later handshakes; empty or unreadable stores fail closed |
-| macOS | Native Security.framework evaluation via `rustls-platform-verifier` with the explicit Graviola provider | Platform distrust and constraint decisions are honored as the OS reports them |
+| macOS | Native Security.framework evaluation via `rustls-platform-verifier` with the explicit Graviola provider, unless `SSL_CERT_FILE` or `SSL_CERT_DIR` selects PEM roots, which take precedence | Platform distrust and constraint decisions are honored as the OS reports them; an explicit file selection reloads on change and fails closed like Unix |
 
 `openssl-probe` only locates the system CA paths. It is not a TLS or
 cryptographic backend. Cryptography remains Rustls plus Graviola; the normal
@@ -26,12 +26,15 @@ with a TLS error. The clients never silently fall back to embedded roots.
 
 ## Trust freshness
 
-The default verifier reloads the system store when its files change and
-re-verifies on later handshakes. A failed reload fails the handshake rather
-than reusing stale trust. Requests already admitted may complete; new
-handshakes observe the refreshed store. There is no background polling
-thread; each handshake stats the store paths and only reparses certificates
-when they changed.
+When the verifier uses PEM files (Unix, or macOS with `SSL_CERT_FILE` or
+`SSL_CERT_DIR` set), the default verifier reloads the selected store when
+its files change and re-verifies on later handshakes. A failed reload fails
+the handshake rather than reusing stale trust. Requests already admitted may
+complete; new handshakes observe the refreshed store. There is no background
+polling thread; each handshake stats the store paths and only reparses
+certificates when they changed. When macOS uses native platform evaluation
+(no file selection), each handshake evaluates live against the OS and there
+is nothing to refresh.
 
 `Client::new()` and `Connector::new()` load lazily so their constructors
 stay infallible: the first handshake reports an unusable store as a TLS

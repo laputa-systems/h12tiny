@@ -54,7 +54,11 @@ impl From<SystemTrustError> for TlsError {
 /// Default HTTPS verifier backed by the host operating-system trust store.
 ///
 /// On Apple platforms this delegates to the native Security.framework
-/// evaluation, preserving platform distrust decisions. Elsewhere it verifies
+/// evaluation, preserving platform distrust decisions, unless `SSL_CERT_FILE`
+/// or `SSL_CERT_DIR` selects explicit PEM roots. An explicit selection takes
+/// precedence and behaves like other platforms: it verifies through
+/// rustls-webpki, reloads when the selected files change, and fails closed
+/// when they are missing, unreadable, empty, or invalid. Elsewhere it verifies
 /// against PEM system roots through rustls-webpki and reloads them when the
 /// store changes. A failed reload fails the handshake rather than reusing
 /// stale trust.
@@ -70,13 +74,16 @@ enum State {
     Platform {
         verifier: Option<Arc<rustls_platform_verifier::Verifier>>,
     },
+    #[cfg(target_vendor = "apple")]
+    File {
+        cached: Option<CachedVerifier>,
+    },
     #[cfg(not(target_vendor = "apple"))]
     Native {
         cached: Option<CachedVerifier>,
     },
 }
 
-#[cfg(not(target_vendor = "apple"))]
 #[derive(Debug)]
 struct CachedVerifier {
     verifier: Arc<rustls::client::WebPkiServerVerifier>,
@@ -131,18 +138,48 @@ impl State {
     fn ensure_loaded(&mut self, provider: &Arc<CryptoProvider>) -> Result<(), SystemTrustError> {
         match self {
             #[cfg(target_vendor = "apple")]
-            State::Platform { verifier } => {
-                if verifier.is_none() {
-                    let native = rustls_platform_verifier::Verifier::new(provider.clone()).map_err(
-                        |error| {
-                            SystemTrustError::new(format!(
-                                "native verification is unavailable: {error}"
-                            ))
-                        },
-                    )?;
-                    *verifier = Some(Arc::new(native));
+            State::Platform { .. } | State::File { .. } => {
+                if env_override_active() {
+                    if matches!(self, State::Platform { .. }) {
+                        *self = State::File { cached: None };
+                    }
+                    let State::File { cached } = self else {
+                        unreachable!("env override uses file trust");
+                    };
+                    let fingerprint = TrustFingerprint::capture()?;
+                    let fresh = match cached.as_ref() {
+                        Some(current) if current.fingerprint == fingerprint => return Ok(()),
+                        _ => true,
+                    };
+                    if fresh {
+                        let (verifier, fingerprint) =
+                            load_native_verifier(provider, fingerprint)?;
+                        *cached = Some(CachedVerifier {
+                            verifier,
+                            fingerprint,
+                        });
+                    }
+                    Ok(())
+                } else {
+                    if matches!(self, State::File { .. }) {
+                        *self = State::Platform { verifier: None };
+                    }
+                    let State::Platform { verifier } = self else {
+                        unreachable!("platform trust uses native evaluation");
+                    };
+                    if verifier.is_none() {
+                        let native =
+                            rustls_platform_verifier::Verifier::new(provider.clone()).map_err(
+                                |error| {
+                                    SystemTrustError::new(format!(
+                                        "native verification is unavailable: {error}"
+                                    ))
+                                },
+                            )?;
+                        *verifier = Some(Arc::new(native));
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
             #[cfg(not(target_vendor = "apple"))]
             State::Native { cached } => {
@@ -171,6 +208,11 @@ impl State {
                 .expect("system trust is loaded before use")
                 .clone()
                 as Arc<dyn ServerCertVerifier>,
+            #[cfg(target_vendor = "apple")]
+            State::File { cached } => cached
+                .as_ref()
+                .map(|current| current.verifier.clone() as Arc<dyn ServerCertVerifier>)
+                .expect("system trust is loaded before use"),
             #[cfg(not(target_vendor = "apple"))]
             State::Native { cached } => cached
                 .as_ref()
@@ -338,7 +380,17 @@ pub fn system_roots_snapshot(
     Ok(roots)
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(target_vendor = "apple")]
+fn env_override_active() -> bool {
+    if std::env::var_os(openssl_probe::ENV_CERT_FILE).is_some() {
+        return true;
+    }
+    match std::env::var_os(openssl_probe::ENV_CERT_DIR) {
+        Some(dirs) => std::env::split_paths(&dirs).any(|path| !path.as_os_str().is_empty()),
+        None => false,
+    }
+}
+
 fn load_native_verifier(
     provider: &Arc<CryptoProvider>,
     fingerprint: TrustFingerprint,
@@ -370,7 +422,6 @@ fn load_native_verifier(
     Ok((verifier, fingerprint))
 }
 
-#[cfg(not(target_vendor = "apple"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrustFingerprint {
     env_file: Option<OsString>,
@@ -379,7 +430,6 @@ struct TrustFingerprint {
     dirs: Vec<TrackedDir>,
 }
 
-#[cfg(not(target_vendor = "apple"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrackedFile {
     path: PathBuf,
@@ -387,7 +437,6 @@ struct TrackedFile {
     size: u64,
 }
 
-#[cfg(not(target_vendor = "apple"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrackedDir {
     path: PathBuf,
@@ -395,7 +444,6 @@ struct TrackedDir {
     entries: BTreeMap<OsString, TrackedFile>,
 }
 
-#[cfg(not(target_vendor = "apple"))]
 impl TrustFingerprint {
     fn capture() -> Result<Self, SystemTrustError> {
         let env_file = std::env::var_os(openssl_probe::ENV_CERT_FILE);
