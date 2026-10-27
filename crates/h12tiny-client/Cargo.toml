@@ -29,7 +29,7 @@ hyper = { workspace = true }
 rustls = { workspace = true, optional = true }
 rustls-graviola = { workspace = true, optional = true }
 rustls-webpki = { workspace = true, optional = true }
-h12tiny-tls-system = { workspace = true, optional = true }
+h12tiny-tls-system = { version = "0.5.0", path = "../h12tiny-tls-system", optional = true }
 
 [dev-dependencies]
 async-io = { workspace = true }
