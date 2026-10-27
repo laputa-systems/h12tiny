@@ -530,9 +530,14 @@ struct TrackedFile {
 /// path) and symlink retargeting when the replacement keeps both. The device
 /// plus inode names the exact object, and the change time advances on every
 /// content or metadata mutation, including ones that preserve mtime and size:
-/// `utimensat` can forge mtime/atime but never ctime. Identity is recorded
-/// for the link itself when the path is a symlink (retargeting replaces the
-/// link) and for the target otherwise; both change on atomic replacement.
+/// `utimensat` can forge mtime/atime but never ctime.
+///
+/// Both identities are recorded when the path is a symlink: the link itself
+/// (retargeting replaces the link) and the fully resolved target (a nested
+/// retarget further down the chain replaces the final object while every
+/// outer link stays untouched, as when Laputa flips `active` beneath the
+/// canonical bundle symlink). A non-symlink records only its own identity.
+/// Dangling or looping links record the link identity with no target.
 ///
 /// Non-Unix platforms keep the portable mtime/length fingerprint: atomic
 /// replacement or retargeting that preserves both is not detected there.
@@ -543,21 +548,46 @@ struct FileIdentity {
     change_sec: i64,
     change_nsec: i64,
     is_symlink: bool,
+    target: Option<ResolvedTarget>,
+}
+
+/// Identity of the fully resolved file behind a symlink chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedTarget {
+    device: u64,
+    inode: u64,
+    change_sec: i64,
+    change_nsec: i64,
 }
 
 #[cfg(unix)]
 fn file_identity(path: &Path) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt as _;
-    let target = std::fs::metadata(path).ok()?;
     let link = std::fs::symlink_metadata(path).ok()?;
-    let is_symlink = link.is_symlink();
-    let anchor = if is_symlink { link } else { target };
+    if !link.is_symlink() {
+        let target = std::fs::metadata(path).ok()?;
+        return Some(FileIdentity {
+            device: target.dev(),
+            inode: target.ino(),
+            change_sec: target.ctime(),
+            change_nsec: target.ctime_nsec(),
+            is_symlink: false,
+            target: None,
+        });
+    }
+    let resolved = std::fs::metadata(path).ok().map(|target| ResolvedTarget {
+        device: target.dev(),
+        inode: target.ino(),
+        change_sec: target.ctime(),
+        change_nsec: target.ctime_nsec(),
+    });
     Some(FileIdentity {
-        device: anchor.dev(),
-        inode: anchor.ino(),
-        change_sec: anchor.ctime(),
-        change_nsec: anchor.ctime_nsec(),
-        is_symlink,
+        device: link.dev(),
+        inode: link.ino(),
+        change_sec: link.ctime(),
+        change_nsec: link.ctime_nsec(),
+        is_symlink: true,
+        target: resolved,
     })
 }
 

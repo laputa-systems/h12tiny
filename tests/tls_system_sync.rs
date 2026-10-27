@@ -738,6 +738,89 @@ fn symlink_retarget_with_preserved_size_and_mtime_refreshes_trust() {
 }
 
 #[test]
+fn nested_symlink_retarget_through_active_refreshes_trust() {
+    if isolated("nested_symlink_retarget_through_active_refreshes_trust") {
+        return;
+    }
+    let first = tls_system::p384_chain();
+    let second = tls_system::p384_chain();
+    let dir = tls_system::TempDir::new();
+    // Laputa-style layout: the tracked bundle path is a symlink whose target
+    // passes through the `active` symlink, which selects the generation.
+    // Retargeting `active` replaces neither the tracked link nor the final
+    // bundle's size or mtime, so only the resolved target identity changes.
+    let gen3 = dir.path().join("generations").join("3");
+    let gen4 = dir.path().join("generations").join("4");
+    std::fs::create_dir_all(&gen3).unwrap();
+    std::fs::create_dir_all(&gen4).unwrap();
+    let target_len = first.root_pem.len().max(second.root_pem.len());
+    std::fs::write(gen3.join("bundle.pem"), pad_pem(&first.root_pem, target_len)).unwrap();
+    std::fs::write(gen4.join("bundle.pem"), pad_pem(&second.root_pem, target_len)).unwrap();
+    let stamped = file_mtime(&gen3.join("bundle.pem"));
+    restore_mtime(&gen4.join("bundle.pem"), stamped);
+
+    let active = dir.path().join("active");
+    std::os::unix::fs::symlink("generations/3", &active).unwrap();
+    let link = dir.path().join("bundle.pem");
+    std::os::unix::fs::symlink("active/bundle.pem", &link).unwrap();
+    tls_system::set_bundle_file(&link);
+
+    let first_address = serve_chain(
+        vec![
+            first.server_der.clone(),
+            first.intermediate_der.clone(),
+            first.issuing_der.clone(),
+        ],
+        first.server_key_der.clone(),
+        2,
+    );
+    let second_address = serve_chain(
+        vec![
+            second.server_der.clone(),
+            second.intermediate_der.clone(),
+            second.issuing_der.clone(),
+        ],
+        second.server_key_der.clone(),
+        2,
+    );
+    let client = Client::new();
+    let first_request = || {
+        Request::builder()
+            .uri(format!("https://localhost:{}/", first_address.port()))
+            .body(Vec::new())
+            .unwrap()
+    };
+    let second_request = || {
+        Request::builder()
+            .uri(format!("https://localhost:{}/", second_address.port()))
+            .body(Vec::new())
+            .unwrap()
+    };
+    assert_eq!(
+        client
+            .request_with_timeout(first_request(), Some(Duration::from_secs(5)))
+            .unwrap()
+            .status(),
+        200
+    );
+
+    std::fs::remove_file(&active).unwrap();
+    std::os::unix::fs::symlink("generations/4", &active).unwrap();
+
+    assert_eq!(
+        client
+            .request_with_timeout(second_request(), Some(Duration::from_secs(5)))
+            .unwrap()
+            .status(),
+        200
+    );
+    let error = client
+        .request_with_timeout(first_request(), Some(Duration::from_secs(5)))
+        .expect_err("retargeted root must fail");
+    assert_eq!(error.kind(), ErrorKind::Tls);
+}
+
+#[test]
 fn designated_bundle_with_unparsable_block_fails_closed() {
     if isolated("designated_bundle_with_unparsable_block_fails_closed") {
         return;
