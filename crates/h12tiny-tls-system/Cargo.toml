@@ -9,6 +9,7 @@ license = "MIT"
 repository = "https://github.com/laputa-systems/h12tiny"
 
 [dependencies]
+base64 = { workspace = true }
 rustls = { workspace = true }
 rustls-webpki = { workspace = true }
 rustls-native-certs = { workspace = true }

@@ -561,3 +561,229 @@ fn valid_unrelated_chains_work() {
         .unwrap();
     assert_eq!(response.status(), 200);
 }
+
+fn pad_pem(pem: &str, total_len: usize) -> String {
+    let mut padded = pem.to_string();
+    while padded.len() < total_len {
+        padded.push('\n');
+    }
+    padded
+}
+
+fn file_mtime(path: &std::path::Path) -> std::time::SystemTime {
+    std::fs::metadata(path)
+        .expect("bundle metadata")
+        .modified()
+        .expect("bundle mtime")
+}
+
+fn restore_mtime(path: &std::path::Path, mtime: std::time::SystemTime) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("bundle file")
+        .set_modified(mtime)
+        .expect("restore mtime");
+}
+
+#[test]
+fn same_size_forged_mtime_replacement_refreshes_trust() {
+    if isolated("same_size_forged_mtime_replacement_refreshes_trust") {
+        return;
+    }
+    let first = tls_system::p384_chain();
+    let second = tls_system::p384_chain();
+    let dir = tls_system::TempDir::new();
+    let bundle = tls_system::write_bundle(dir.path(), "bundle.pem", &[&first.root_pem]);
+    tls_system::set_bundle_file(&bundle);
+    let stamped = file_mtime(&bundle);
+
+    let first_address = serve_chain(
+        vec![
+            first.server_der.clone(),
+            first.intermediate_der.clone(),
+            first.issuing_der.clone(),
+        ],
+        first.server_key_der.clone(),
+        3,
+    );
+    let second_address = serve_chain(
+        vec![
+            second.server_der.clone(),
+            second.intermediate_der.clone(),
+            second.issuing_der.clone(),
+        ],
+        second.server_key_der.clone(),
+        3,
+    );
+    // One long-lived client: the fingerprint must notice the replacement.
+    // Fresh clients would reload unconditionally and prove nothing here.
+    let client = Client::new();
+    let first_request = || {
+        Request::builder()
+            .uri(format!("https://localhost:{}/", first_address.port()))
+            .body(Vec::new())
+            .unwrap()
+    };
+    let second_request = || {
+        Request::builder()
+            .uri(format!("https://localhost:{}/", second_address.port()))
+            .body(Vec::new())
+            .unwrap()
+    };
+    assert_eq!(
+        client
+            .request_with_timeout(first_request(), Some(Duration::from_secs(5)))
+            .unwrap()
+            .status(),
+        200
+    );
+    let error = client
+        .request_with_timeout(second_request(), Some(Duration::from_secs(5)))
+        .expect_err("unknown root must fail");
+    assert_eq!(error.kind(), ErrorKind::Tls);
+
+    let target_len = first.root_pem.len().max(second.root_pem.len());
+    std::fs::write(&bundle, pad_pem(&first.root_pem, target_len)).unwrap();
+    restore_mtime(&bundle, stamped);
+    std::fs::write(&bundle, pad_pem(&second.root_pem, target_len)).unwrap();
+    restore_mtime(&bundle, stamped);
+
+    assert_eq!(
+        client
+            .request_with_timeout(second_request(), Some(Duration::from_secs(5)))
+            .unwrap()
+            .status(),
+        200
+    );
+    let error = client
+        .request_with_timeout(first_request(), Some(Duration::from_secs(5)))
+        .expect_err("replaced root must fail");
+    assert_eq!(error.kind(), ErrorKind::Tls);
+}
+
+#[test]
+fn symlink_retarget_with_preserved_size_and_mtime_refreshes_trust() {
+    if isolated("symlink_retarget_with_preserved_size_and_mtime_refreshes_trust") {
+        return;
+    }
+    let first = tls_system::p384_chain();
+    let second = tls_system::p384_chain();
+    let dir = tls_system::TempDir::new();
+    let target_len = first.root_pem.len().max(second.root_pem.len());
+    let first_path = dir.path().join("first.pem");
+    let second_path = dir.path().join("second.pem");
+    std::fs::write(&first_path, pad_pem(&first.root_pem, target_len)).unwrap();
+    std::fs::write(&second_path, pad_pem(&second.root_pem, target_len)).unwrap();
+    let stamped = file_mtime(&first_path);
+    restore_mtime(&second_path, stamped);
+
+    let link = dir.path().join("bundle.pem");
+    std::os::unix::fs::symlink(&first_path, &link).unwrap();
+    tls_system::set_bundle_file(&link);
+
+    let first_address = serve_chain(
+        vec![
+            first.server_der.clone(),
+            first.intermediate_der.clone(),
+            first.issuing_der.clone(),
+        ],
+        first.server_key_der.clone(),
+        2,
+    );
+    let second_address = serve_chain(
+        vec![
+            second.server_der.clone(),
+            second.intermediate_der.clone(),
+            second.issuing_der.clone(),
+        ],
+        second.server_key_der.clone(),
+        2,
+    );
+    let client = Client::new();
+    let first_request = || {
+        Request::builder()
+            .uri(format!("https://localhost:{}/", first_address.port()))
+            .body(Vec::new())
+            .unwrap()
+    };
+    let second_request = || {
+        Request::builder()
+            .uri(format!("https://localhost:{}/", second_address.port()))
+            .body(Vec::new())
+            .unwrap()
+    };
+    assert_eq!(
+        client
+            .request_with_timeout(first_request(), Some(Duration::from_secs(5)))
+            .unwrap()
+            .status(),
+        200
+    );
+
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&second_path, &link).unwrap();
+
+    assert_eq!(
+        client
+            .request_with_timeout(second_request(), Some(Duration::from_secs(5)))
+            .unwrap()
+            .status(),
+        200
+    );
+    let error = client
+        .request_with_timeout(first_request(), Some(Duration::from_secs(5)))
+        .expect_err("retargeted root must fail");
+    assert_eq!(error.kind(), ErrorKind::Tls);
+}
+
+#[test]
+fn designated_bundle_with_unparsable_block_fails_closed() {
+    if isolated("designated_bundle_with_unparsable_block_fails_closed") {
+        return;
+    }
+    let chain = tls_system::p384_chain();
+    let dir = tls_system::TempDir::new();
+    let bundle = tls_system::write_bundle(dir.path(), "bundle.pem", &[&chain.root_pem]);
+    std::fs::write(
+        &bundle,
+        format!("{chain}\n-----BEGIN CERTIFICATE-----\n!!!not-base64!!!\n-----END CERTIFICATE-----\n", chain = chain.root_pem),
+    )
+    .unwrap();
+    tls_system::set_bundle_file(&bundle);
+
+    let error = ClientTlsConfigBuilder::new()
+        .build()
+        .expect_err("designated bundle with an unparsable block must fail");
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("undecodable") || message.contains("unusable"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn supplementary_dir_errors_do_not_break_valid_bundle() {
+    if isolated("supplementary_dir_errors_do_not_break_valid_bundle") {
+        return;
+    }
+    let chain = tls_system::p384_chain();
+    let dir = tls_system::TempDir::new();
+    let bundle = tls_system::write_bundle(dir.path(), "bundle.pem", &[&chain.root_pem]);
+    tls_system::set_bundle_file(&bundle);
+    let certs_dir = dir.path().join("certs.d");
+    std::fs::create_dir_all(&certs_dir).unwrap();
+    std::fs::write(certs_dir.join("garbage.pem"), "definitely not PEM\n").unwrap();
+    tls_system::set_bundle_dir(&certs_dir);
+
+    let address = serve_chain(
+        vec![
+            chain.server_der.clone(),
+            chain.intermediate_der.clone(),
+            chain.issuing_der.clone(),
+        ],
+        chain.server_key_der.clone(),
+        1,
+    );
+    assert_eq!(get(address.port()).unwrap(), 200);
+}

@@ -28,6 +28,7 @@ exclude = [
 [workspace.dependencies]
 async-io = "2.6"
 async-net = "2.0"
+base64 = "0.22"
 bytes = "1.12.1"
 futures-channel = "0.3.34"
 futures-io = "0.3.34"

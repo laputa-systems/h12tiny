@@ -24,6 +24,24 @@ backends.
 A missing, unreadable, empty, or invalid system store fails the handshake
 with a TLS error. The clients never silently fall back to embedded roots.
 
+Trust sources have explicit authority. The designated certificate file
+(`SSL_CERT_FILE` when set, otherwise the probed default) must parse to at
+least one usable root: every `CERTIFICATE` block must base64-decode and
+admission-test as a CA certificate, and the first failure rejects the whole
+load. Discovered certificate directories are supplementary: entry failures
+there are tolerated so one bad file cannot veto an otherwise valid store.
+An empty aggregate store still fails closed.
+
+Change detection compares path, modification time, and length plus, on
+Unix, device, inode, and change time. The inode and change time close two
+gaps in mtime/length comparison: atomic replacement (`rename` over the
+bundle path) and symlink retargeting that preserve both, including
+modification times forged with `utimensat` (change time cannot be forged).
+For symlinks the link itself is fingerprinted, so retargeting is detected
+even when the new target matches in size and mtime. Non-Unix platforms keep
+the portable mtime/length comparison; that limitation is documented here
+rather than papered over.
+
 ## Trust freshness
 
 When the verifier uses PEM files (Unix, or macOS with `SSL_CERT_FILE` or

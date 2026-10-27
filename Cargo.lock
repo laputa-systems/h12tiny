@@ -623,6 +623,7 @@ dependencies = [
 name = "h12tiny-tls-system"
 version = "0.6.0"
 dependencies = [
+ "base64 0.22.1",
  "openssl-probe",
  "rustls",
  "rustls-native-certs",

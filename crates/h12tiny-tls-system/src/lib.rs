@@ -359,6 +359,7 @@ pub fn system_roots_snapshot(
     provider: &Arc<CryptoProvider>,
 ) -> Result<rustls::RootCertStore, SystemTrustError> {
     let _ = provider;
+    require_designated_file_usable(designated_bundle_file().as_deref())?;
     let result = rustls_native_certs::load_native_certs();
     if result.certs.is_empty() {
         let detail = result
@@ -391,10 +392,95 @@ fn env_override_active() -> bool {
     }
 }
 
+/// Explicit bundle file the aggregate load treats as authoritative.
+///
+/// `SSL_CERT_FILE` when set, otherwise the probed default certificate file.
+/// Discovered directories are supplementary: entry failures there are
+/// tolerated, but the designated file must parse to at least one usable root
+/// or loading fails closed instead of silently serving a partial store.
+fn designated_bundle_file() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os(openssl_probe::ENV_CERT_FILE) {
+        return Some(PathBuf::from(explicit));
+    }
+    openssl_probe::probe().cert_file
+}
+
+/// Requires the designated bundle file, when one is configured, to parse to
+/// at least one usable root. Every `CERTIFICATE` block must base64-decode
+/// and admission-test as a CA certificate; the first failure rejects the
+/// file. Supplementary directory entries keep the aggregate loader's
+/// leniency.
+fn require_designated_file_usable(designated: Option<&Path>) -> Result<(), SystemTrustError> {
+    let Some(path) = designated else {
+        return Ok(());
+    };
+    let bytes = std::fs::read(path).map_err(|error| {
+        SystemTrustError::new(format!(
+            "designated CA file {} is unreadable: {error}",
+            path.display()
+        ))
+    })?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| {
+        SystemTrustError::new(format!(
+            "designated CA file {} is not UTF-8 PEM",
+            path.display()
+        ))
+    })?;
+    let mut blocks = 0;
+    let mut usable = 0;
+    let mut rest = text;
+    while let Some(begin) = rest.find("-----BEGIN CERTIFICATE-----") {
+        let after_begin = &rest[begin + "-----BEGIN CERTIFICATE-----".len()..];
+        let Some(end) = after_begin.find("-----END CERTIFICATE-----") else {
+            return Err(SystemTrustError::new(format!(
+                "designated CA file {} has an unterminated CERTIFICATE block",
+                path.display()
+            )));
+        };
+        blocks += 1;
+        let encoded: String = after_begin[..end]
+            .chars()
+            .filter(|character| !character.is_ascii_whitespace())
+            .collect();
+        let der = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            encoded.as_bytes(),
+        )
+        .map_err(|error| {
+            SystemTrustError::new(format!(
+                "designated CA file {} has an undecodable CERTIFICATE block: {error}",
+                path.display()
+            ))
+        })?;
+        let mut probe = rustls::RootCertStore::empty();
+        probe.add(CertificateDer::from(der)).map_err(|error| {
+            SystemTrustError::new(format!(
+                "designated CA file {} has an unusable root: {error:?}",
+                path.display()
+            ))
+        })?;
+        usable += 1;
+        rest = &after_begin[end + "-----END CERTIFICATE-----".len()..];
+    }
+    if blocks == 0 || usable == 0 {
+        return Err(SystemTrustError::new(format!(
+            "designated CA file {} contains no usable certificates",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn load_native_verifier(
     provider: &Arc<CryptoProvider>,
     fingerprint: TrustFingerprint,
 ) -> Result<(Arc<rustls::client::WebPkiServerVerifier>, TrustFingerprint), SystemTrustError> {
+    require_designated_file_usable(
+        fingerprint
+            .file
+            .as_ref()
+            .map(|tracked| tracked.path.as_path()),
+    )?;
     let result = rustls_native_certs::load_native_certs();
     if result.certs.is_empty() {
         let detail = result
@@ -435,12 +521,56 @@ struct TrackedFile {
     path: PathBuf,
     modified: Option<SystemTime>,
     size: u64,
+    identity: Option<FileIdentity>,
+}
+
+/// Filesystem identity that survives mtime/size preservation.
+///
+/// Modification time and length miss atomic replacement (`rename` over the
+/// path) and symlink retargeting when the replacement keeps both. The device
+/// plus inode names the exact object, and the change time advances on every
+/// content or metadata mutation, including ones that preserve mtime and size:
+/// `utimensat` can forge mtime/atime but never ctime. Identity is recorded
+/// for the link itself when the path is a symlink (retargeting replaces the
+/// link) and for the target otherwise; both change on atomic replacement.
+///
+/// Non-Unix platforms keep the portable mtime/length fingerprint: atomic
+/// replacement or retargeting that preserves both is not detected there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+    change_sec: i64,
+    change_nsec: i64,
+    is_symlink: bool,
+}
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+    let target = std::fs::metadata(path).ok()?;
+    let link = std::fs::symlink_metadata(path).ok()?;
+    let is_symlink = link.is_symlink();
+    let anchor = if is_symlink { link } else { target };
+    Some(FileIdentity {
+        device: anchor.dev(),
+        inode: anchor.ino(),
+        change_sec: anchor.ctime(),
+        change_nsec: anchor.ctime_nsec(),
+        is_symlink,
+    })
+}
+
+#[cfg(not(unix))]
+fn file_identity(_path: &Path) -> Option<FileIdentity> {
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TrackedDir {
     path: PathBuf,
     modified: Option<SystemTime>,
+    identity: Option<FileIdentity>,
     entries: BTreeMap<OsString, TrackedFile>,
 }
 
@@ -489,9 +619,10 @@ impl TrustFingerprint {
             )));
         }
         Ok(TrackedFile {
-            path,
+            path: path.clone(),
             modified: metadata.modified().ok(),
             size: metadata.len(),
+            identity: file_identity(&path),
         })
     }
 
@@ -532,18 +663,21 @@ impl TrustFingerprint {
             if !entry_metadata.is_file() {
                 continue;
             }
+            let entry_identity = file_identity(&entry_path);
             entries.insert(
                 entry.file_name(),
                 TrackedFile {
                     path: entry_path,
                     modified: entry_metadata.modified().ok(),
                     size: entry_metadata.len(),
+                    identity: entry_identity,
                 },
             );
         }
         Ok(TrackedDir {
             path: path.to_path_buf(),
             modified: metadata.modified().ok(),
+            identity: file_identity(path),
             entries,
         })
     }

@@ -55,6 +55,13 @@ pub fn set_bundle_file(path: &Path) {
     }
 }
 
+pub fn set_bundle_dir(path: &Path) {
+    let path = path.to_str().expect("bundle dir is UTF-8");
+    unsafe {
+        std::env::set_var("SSL_CERT_DIR", path);
+    }
+}
+
 pub fn clear_bundle_env() {
     unsafe {
         std::env::remove_var("SSL_CERT_FILE");
