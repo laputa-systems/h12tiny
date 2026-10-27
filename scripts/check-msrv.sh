@@ -43,6 +43,7 @@ check crates/h12tiny-util/Cargo.toml --all-features
 check crates/h12tiny-client/Cargo.toml --no-default-features --features http1,http2
 check crates/h12tiny-client-sync/Cargo.toml --no-default-features
 check crates/h12tiny-server/Cargo.toml --no-default-features --features http1,http2
+check crates/h12tiny-tls-system/Cargo.toml
 
 # The facade and WebSocket-enabled web component also declare Rust 1.89.
 check Cargo.toml --workspace --all-features

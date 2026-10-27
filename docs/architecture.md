@@ -11,15 +11,18 @@ The futures-I/O protocol crates own HTTP framing and protocol state.
 | `h12tiny-client` | Async DNS/TCP, TLS/ALPN, request normalization, H1/H2 handshakes, and per-origin pool | No server or routing code |
 | `h12tiny-client-normalize` | Direct-origin URI, Host, and HTTP/1 target normalization | No transport or protocol framing |
 | `h12tiny-client-sync` | Blocking direct-origin HTTP/1.1 serialization and response framing | No futures, runtime, H2, pool, proxy, or upgrade |
+| `h12tiny-tls-system` | Operating-system TLS trust and refresh for both clients | No HTTP framing, pooling, or application policy |
 | `h12tiny-server` | H1/H2 connection selection, TLS ALPN dispatch, upgrades, and listener lifecycle | No client pool or router |
 | `h12tiny-util` | Protocol-neutral bodies, bounded collection, streaming helpers, and optional JSON | No DNS, TCP, TLS, listeners, or routing |
 | `h12tiny-web` | Small router, extractors, response conversion, and optional web conveniences | No protocol implementation or client policy |
 | `h12tiny` | Feature-gated component reexports | No endpoint implementation |
 
 The dependency direction is one-way: client and server use core; both client
-transports use normalization; the blocking client does not use core; web uses
-util and reaches server only for the optional upgrade surface. Client crates do
-not depend on server or web.
+transports use normalization and the shared system-trust crate; the blocking
+client does not use core; web uses util and reaches server only for the
+optional upgrade surface. Client crates do not depend on server or web. The
+system-trust crate owns OS trust loading and refresh; both clients use it for
+their default verifier and never depend on each other's TLS code.
 
 ## Protocol and runtime ownership
 

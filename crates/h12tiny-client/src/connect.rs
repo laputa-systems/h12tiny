@@ -337,13 +337,13 @@ pub struct ConnectorBuilder {
 /// global provider selection.
 ///
 /// [`ClientTlsConfigBuilder::new`] uses h12tiny's Graviola provider, the
-/// WebPKI roots, no client certificate, and ALPN offerings for the compiled
-/// HTTP versions, preferring HTTP/2 when it is enabled. Callers can replace
-/// the root store, ALPN list, or client authentication, or restrict TLS
-/// protocol versions while retaining that explicit provider. Applications
-/// with a different Rustls provider can use
-/// [`ClientTlsConfigBuilder::with_provider`] instead; this is useful when
-/// several Rustls consumers share one process.
+/// host system trust store, no client certificate, and ALPN offerings for the
+/// compiled HTTP versions, preferring HTTP/2 when it is enabled. The system
+/// verifier refreshes the store as it changes. Callers can replace the root
+/// store, ALPN list, or client authentication, or restrict TLS protocol
+/// versions while retaining that explicit provider. Applications with a
+/// different Rustls provider can use [`ClientTlsConfigBuilder::with_provider`]
+/// instead; this is useful when several Rustls consumers share one process.
 ///
 /// For policies requiring a custom verifier or other Rustls-only settings,
 /// construct a [`rustls::ClientConfig`] directly and pass it to
@@ -351,10 +351,17 @@ pub struct ConnectorBuilder {
 #[cfg(feature = "tls")]
 pub struct ClientTlsConfigBuilder {
     provider: Arc<rustls::crypto::CryptoProvider>,
-    roots: rustls::RootCertStore,
+    trust: TrustSource,
     alpn_protocols: Vec<Vec<u8>>,
     protocol_versions: Option<Vec<&'static rustls::SupportedProtocolVersion>>,
     client_auth: ClientAuthentication,
+}
+
+#[cfg(feature = "tls")]
+#[derive(Clone)]
+enum TrustSource {
+    System,
+    Explicit(rustls::RootCertStore),
 }
 
 #[cfg(feature = "tls")]
@@ -368,13 +375,16 @@ enum ClientAuthentication {
 
 #[cfg(feature = "tls")]
 impl ClientTlsConfigBuilder {
-    /// Starts with h12tiny's explicit Graviola provider and standard HTTPS
-    /// client defaults.
+    /// Starts with h12tiny's explicit Graviola provider and system trust.
+    ///
+    /// The store loads when [`Self::build`] runs and refreshes on later
+    /// handshakes. A missing, unreadable, empty, or invalid store fails
+    /// closed instead of falling back to embedded roots.
     pub fn new() -> Self {
         Self::with_provider(Arc::new(rustls_graviola::default_provider()))
     }
 
-    /// Starts with an explicitly supplied Rustls provider.
+    /// Starts with an explicitly supplied Rustls provider and system trust.
     ///
     /// [`Self::build`] returns any compatibility error, for example when the
     /// provider cannot support Rustls' safe default protocol versions. This
@@ -382,25 +392,41 @@ impl ClientTlsConfigBuilder {
     pub fn with_provider(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
         Self {
             provider,
-            roots: rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+            trust: TrustSource::System,
             alpn_protocols: default_alpn_protocols(),
             protocol_versions: None,
             client_auth: ClientAuthentication::None,
         }
     }
 
-    /// Replaces the trust store used for server certificate validation.
+    /// Replaces the system trust store with an explicit one for server
+    /// certificate validation. Replacement never merges with system roots.
     pub fn root_certificates(mut self, roots: rustls::RootCertStore) -> Self {
-        self.roots = roots;
+        self.trust = TrustSource::Explicit(roots);
         self
     }
 
-    /// Adds one trust anchor to the existing trust store.
+    /// Adds one trust anchor to the store under construction.
+    ///
+    /// With the default system trust this snapshots the system store at
+    /// build time and adds the anchor to that snapshot.
     pub fn add_root_certificate(
         mut self,
         certificate: rustls::pki_types::CertificateDer<'static>,
     ) -> Result<Self, rustls::Error> {
-        self.roots.add(certificate)?;
+        let roots = match &mut self.trust {
+            TrustSource::Explicit(roots) => roots,
+            TrustSource::System => {
+                let snapshot = h12tiny_tls_system::system_roots_snapshot(&self.provider)
+                    .map_err(|error| rustls::Error::General(error.to_string()))?;
+                self.trust = TrustSource::Explicit(snapshot);
+                match &mut self.trust {
+                    TrustSource::Explicit(roots) => roots,
+                    TrustSource::System => unreachable!("trust was just replaced"),
+                }
+            }
+        };
+        roots.add(certificate)?;
         Ok(self)
     }
 
@@ -446,25 +472,51 @@ impl ClientTlsConfigBuilder {
     }
 
     /// Finishes the Rustls configuration.
+    ///
+    /// System trust loads now and fails closed when unavailable. Explicit
+    /// stores are used as supplied.
     pub fn build(self) -> Result<rustls::ClientConfig, rustls::Error> {
-        let builder = rustls::ClientConfig::builder_with_provider(self.provider);
-        let builder = match self.protocol_versions {
-            Some(versions) => builder.with_protocol_versions(&versions)?,
-            None => builder.with_safe_default_protocol_versions()?,
-        };
-        let mut config = match self.client_auth {
-            ClientAuthentication::None => builder
-                .with_root_certificates(self.roots)
-                .with_no_client_auth(),
-            ClientAuthentication::Certificates {
+        match (self.trust, self.client_auth) {
+            (TrustSource::System, ClientAuthentication::None) => {
+                h12tiny_tls_system::system_client_config(
+                    self.provider,
+                    self.alpn_protocols,
+                    self.protocol_versions,
+                )
+                .map_err(|error| rustls::Error::General(error.to_string()))
+            }
+            (TrustSource::System, ClientAuthentication::Certificates {
                 certificate_chain,
                 private_key,
-            } => builder
-                .with_root_certificates(self.roots)
-                .with_client_auth_cert(certificate_chain, private_key)?,
-        };
-        config.alpn_protocols = self.alpn_protocols;
-        Ok(config)
+            }) => h12tiny_tls_system::system_client_config_with_auth(
+                self.provider,
+                self.alpn_protocols,
+                self.protocol_versions,
+                certificate_chain,
+                private_key,
+            )
+            .map_err(|error| rustls::Error::General(error.to_string())),
+            (TrustSource::Explicit(roots), client_auth) => {
+                let builder = rustls::ClientConfig::builder_with_provider(self.provider);
+                let builder = match self.protocol_versions {
+                    Some(versions) => builder.with_protocol_versions(&versions)?,
+                    None => builder.with_safe_default_protocol_versions()?,
+                };
+                let mut config = match client_auth {
+                    ClientAuthentication::None => builder
+                        .with_root_certificates(roots)
+                        .with_no_client_auth(),
+                    ClientAuthentication::Certificates {
+                        certificate_chain,
+                        private_key,
+                    } => builder
+                        .with_root_certificates(roots)
+                        .with_client_auth_cert(certificate_chain, private_key)?,
+                };
+                config.alpn_protocols = self.alpn_protocols;
+                Ok(config)
+            }
+        }
     }
 }
 
@@ -564,7 +616,8 @@ impl Connector {
 
     /// Uses h12tiny's standard TLS policy with an explicitly supplied Rustls
     /// provider. This does not install or consult Rustls' process-global
-    /// provider selection.
+    /// provider selection. System trust loads now and fails closed when
+    /// unavailable.
     #[cfg(feature = "tls")]
     pub fn with_tls_provider(
         provider: Arc<rustls::crypto::CryptoProvider>,
@@ -992,9 +1045,10 @@ impl ConnectorBuilder {
 
 #[cfg(feature = "tls")]
 fn default_tls_config() -> rustls::ClientConfig {
-    ClientTlsConfigBuilder::new()
-        .build()
-        .expect("Graviola supports Rustls' safe default protocol versions")
+    h12tiny_tls_system::system_client_config_lazy(
+        std::sync::Arc::new(rustls_graviola::default_provider()),
+        default_alpn_protocols(),
+    )
 }
 
 #[cfg(feature = "tls")]

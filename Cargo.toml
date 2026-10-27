@@ -15,6 +15,7 @@ members = [
     "crates/h12tiny-client-normalize",
     "crates/h12tiny-client-sync",
     "crates/h12tiny-server",
+    "crates/h12tiny-tls-system",
     "crates/h12tiny-util",
     "crates/h12tiny-web",
 ]
@@ -44,7 +45,10 @@ pin-project-lite = "0.2.17"
 rustls = { version = "0.23.43", default-features = false, features = ["std", "tls12"] }
 rustls-graviola = { version = "0.4.0", default-features = false }
 rustls-webpki = { version = "0.103.16", default-features = false }
-webpki-roots = "1.0.10"
+rustls-native-certs = "0.8.5"
+openssl-probe = "0.2"
+rustls-platform-verifier = "0.7.1"
+h12tiny-tls-system = { version = "0.5.0", path = "crates/h12tiny-tls-system" }
 
 [features]
 # The facade deliberately defaults to no roles or protocols.  Applications can
@@ -96,15 +100,18 @@ h12tiny-web = { version = "0.5.0", path = "crates/h12tiny-web", optional = true,
 [dev-dependencies]
 async-io = { workspace = true }
 async-net = { workspace = true }
+base64 = "0.22"
 bytes = { workspace = true }
 futures-channel = { workspace = true }
 futures-io = { workspace = true }
 futures-lite = { workspace = true }
 futures-rustls = { workspace = true }
 futures-util = { workspace = true, features = ["io"] }
+graviola = "0.4"
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
+rcgen = "0.14"
 rustls = { workspace = true }
 rustls-graviola = { workspace = true }
 smol = "2.0.2"

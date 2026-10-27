@@ -1,9 +1,11 @@
 # Clients
 
 Both clients require absolute URIs and share request normalization.
-The default async connector and blocking client accept `http` and `https`.
-A custom async `Dialer` receives the origin URI unchanged and owns scheme
-and transport policy. The transports have separate lifecycle contracts.
+The default async connector and blocking client accept `http` and `https`,
+verifying HTTPS against the host system trust store (see
+[TLS configuration](tls.md)). A custom async `Dialer` receives the origin
+URI unchanged and owns scheme and transport policy. The transports have
+separate lifecycle contracts.
 
 ## Futures-I/O client
 

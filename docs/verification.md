@@ -24,7 +24,8 @@ workspace checks below are the broader integration gates.
 - fastwebsockets: run `cargo test --all-features` from `crates/laputa-fastwebsockets-futures-lite`.
 
 The integration tests cover adversarial H1 framing, H2 lifecycle and
-cancellation, cleartext and TLS protocol selection, client compatibility,
+cancellation, cleartext and TLS protocol selection, system-trust defaults and
+refresh, distrusted-intermediate rejection, client compatibility,
 Unix listener lifecycle, raw upgrades, and WebSocket interop. Extend the
 nearest fixture when changing one of those contracts.
 

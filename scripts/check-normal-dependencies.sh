@@ -41,6 +41,7 @@ url
 mime
 cookie
 socket2
+webpki-roots
 '
 
 printf '%s\n' "$forbidden" | while IFS= read -r package; do

@@ -259,15 +259,23 @@ impl Builder {
 
 /// Rustls configuration builder for the blocking HTTP/1.1 client.
 ///
-/// It selects Graviola explicitly, validates against WebPKI roots, and offers
-/// only `http/1.1` through ALPN. Use [`Builder::tls_config`] for advanced
-/// Rustls configuration such as a private verifier.
+/// It selects Graviola explicitly and verifies against the host system trust
+/// store, offering only `http/1.1` through ALPN. The system verifier refreshes
+/// the store as it changes; use [`Builder::tls_config`] for an explicit
+/// static configuration such as a private verifier.
 #[cfg(feature = "tls")]
 pub struct ClientTlsConfigBuilder {
     provider: std::sync::Arc<rustls::crypto::CryptoProvider>,
-    roots: rustls::RootCertStore,
+    trust: TrustSource,
     protocol_versions: Option<Vec<&'static rustls::SupportedProtocolVersion>>,
     client_auth: ClientAuthentication,
+}
+
+#[cfg(feature = "tls")]
+#[derive(Clone)]
+enum TrustSource {
+    System,
+    Explicit(rustls::RootCertStore),
 }
 
 #[cfg(feature = "tls")]
@@ -281,33 +289,54 @@ enum ClientAuthentication {
 
 #[cfg(feature = "tls")]
 impl ClientTlsConfigBuilder {
-    /// Starts with h12tiny's explicit Graviola provider and public roots.
+    /// Starts with h12tiny's explicit Graviola provider and system trust.
+    ///
+    /// The store loads when [`Self::build`] runs and refreshes on later
+    /// handshakes. A missing, unreadable, empty, or invalid store fails
+    /// closed instead of falling back to embedded roots.
     pub fn new() -> Self {
         Self::with_provider(std::sync::Arc::new(rustls_graviola::default_provider()))
     }
 
-    /// Starts with an explicitly supplied Rustls provider.
+    /// Starts with an explicitly supplied Rustls provider and system trust.
     pub fn with_provider(provider: std::sync::Arc<rustls::crypto::CryptoProvider>) -> Self {
         Self {
             provider,
-            roots: rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+            trust: TrustSource::System,
             protocol_versions: None,
             client_auth: ClientAuthentication::None,
         }
     }
 
-    /// Replaces the trust store used for server certificate validation.
+    /// Replaces the system trust store with an explicit one for server
+    /// certificate validation. Replacement never merges with system roots.
     pub fn root_certificates(mut self, roots: rustls::RootCertStore) -> Self {
-        self.roots = roots;
+        self.trust = TrustSource::Explicit(roots);
         self
     }
 
-    /// Adds one trust anchor to the existing trust store.
+    /// Adds one trust anchor to the store under construction.
+    ///
+    /// With the default system trust this snapshots the system store at
+    /// build time and adds the anchor to that snapshot. Prefer
+    /// [`Self::root_certificates`] with an explicit store when the snapshot
+    /// boundary matters.
     pub fn add_root_certificate(
         mut self,
         certificate: rustls::pki_types::CertificateDer<'static>,
     ) -> Result<Self, rustls::Error> {
-        self.roots.add(certificate)?;
+        let roots = match &mut self.trust {
+            TrustSource::Explicit(roots) => roots,
+            TrustSource::System => {
+                let snapshot = system_roots_snapshot(&self.provider)?;
+                self.trust = TrustSource::Explicit(snapshot);
+                match &mut self.trust {
+                    TrustSource::Explicit(roots) => roots,
+                    TrustSource::System => unreachable!("trust was just replaced"),
+                }
+            }
+        };
+        roots.add(certificate)?;
         Ok(self)
     }
 
@@ -344,26 +373,65 @@ impl ClientTlsConfigBuilder {
     }
 
     /// Finishes a configuration that can negotiate HTTP/1.1 only.
+    ///
+    /// System trust loads now and fails closed when unavailable. Explicit
+    /// stores are used as supplied.
     pub fn build(self) -> Result<rustls::ClientConfig, rustls::Error> {
-        let builder = rustls::ClientConfig::builder_with_provider(self.provider);
-        let builder = match self.protocol_versions {
-            Some(versions) => builder.with_protocol_versions(&versions)?,
-            None => builder.with_safe_default_protocol_versions()?,
-        };
-        let mut config = match self.client_auth {
-            ClientAuthentication::None => builder
-                .with_root_certificates(self.roots)
-                .with_no_client_auth(),
-            ClientAuthentication::Certificates {
+        let alpn = vec![b"http/1.1".to_vec()];
+        match (self.trust, self.client_auth) {
+            (TrustSource::System, ClientAuthentication::None) => {
+                h12tiny_tls_system::system_client_config(
+                    self.provider,
+                    alpn,
+                    self.protocol_versions,
+                )
+                .map_err(system_build_error)
+            }
+            (TrustSource::System, ClientAuthentication::Certificates {
                 certificate_chain,
                 private_key,
-            } => builder
-                .with_root_certificates(self.roots)
-                .with_client_auth_cert(certificate_chain, private_key)?,
-        };
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(config)
+            }) => h12tiny_tls_system::system_client_config_with_auth(
+                self.provider,
+                alpn,
+                self.protocol_versions,
+                certificate_chain,
+                private_key,
+            )
+            .map_err(system_build_error),
+            (TrustSource::Explicit(roots), client_auth) => {
+                let builder = rustls::ClientConfig::builder_with_provider(self.provider);
+                let builder = match self.protocol_versions {
+                    Some(versions) => builder.with_protocol_versions(&versions)?,
+                    None => builder.with_safe_default_protocol_versions()?,
+                };
+                let mut config = match client_auth {
+                    ClientAuthentication::None => builder
+                        .with_root_certificates(roots)
+                        .with_no_client_auth(),
+                    ClientAuthentication::Certificates {
+                        certificate_chain,
+                        private_key,
+                    } => builder
+                        .with_root_certificates(roots)
+                        .with_client_auth_cert(certificate_chain, private_key)?,
+                };
+                config.alpn_protocols = alpn;
+                Ok(config)
+            }
+        }
     }
+}
+
+#[cfg(feature = "tls")]
+fn system_build_error(error: h12tiny_tls_system::SystemTrustError) -> rustls::Error {
+    rustls::Error::General(error.to_string())
+}
+
+#[cfg(feature = "tls")]
+fn system_roots_snapshot(
+    provider: &std::sync::Arc<rustls::crypto::CryptoProvider>,
+) -> Result<rustls::RootCertStore, rustls::Error> {
+    h12tiny_tls_system::system_roots_snapshot(provider).map_err(system_build_error)
 }
 
 #[cfg(feature = "tls")]
@@ -1198,9 +1266,10 @@ fn is_timeout(error: &io::Error) -> bool {
 
 #[cfg(feature = "tls")]
 fn default_tls_config() -> rustls::ClientConfig {
-    ClientTlsConfigBuilder::new()
-        .build()
-        .expect("Graviola supports Rustls safe default protocol versions")
+    h12tiny_tls_system::system_client_config_lazy(
+        std::sync::Arc::new(rustls_graviola::default_provider()),
+        vec![b"http/1.1".to_vec()],
+    )
 }
 
 #[cfg(feature = "tls")]

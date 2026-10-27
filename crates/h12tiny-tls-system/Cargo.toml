@@ -1,0 +1,18 @@
+[package]
+name = "h12tiny-tls-system"
+version = "0.5.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Operating-system TLS trust for h12tiny clients"
+license = "MIT"
+
+repository = "https://github.com/laputa-systems/h12tiny"
+
+[dependencies]
+rustls = { workspace = true }
+rustls-webpki = { workspace = true }
+rustls-native-certs = { workspace = true }
+openssl-probe = { workspace = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+rustls-platform-verifier = { workspace = true }
