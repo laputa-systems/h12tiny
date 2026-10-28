@@ -64,6 +64,27 @@ pub(crate) struct ReadHalf {
   writev_threshold: usize,
   max_message_size: usize,
   buffer: BytesMut,
+  pending_reply: Option<PendingReply>,
+}
+
+/// An automatic pong or close reply consumed from the input but not yet
+/// acknowledged by the reply callback, together with whatever
+/// [`ReadHalf::read_frame_inner`] returned alongside it.
+pub(crate) struct PendingReply {
+  reply: Frame<'static>,
+  outcome: PendingOutcome,
+}
+
+pub(crate) enum PendingOutcome {
+  /// A ping was consumed; keep reading once the pong is acknowledged.
+  Continue,
+  /// A close frame was consumed; return it once the close reply is
+  /// acknowledged.
+  Frame(Frame<'static>),
+  /// Reading failed with an error that carries a reply (for example an
+  /// unacceptable close code answered with a protocol-error close); return
+  /// it once the reply is acknowledged.
+  Error(WebSocketError),
 }
 
 pub struct WebSocketRead<S> {
@@ -138,8 +159,16 @@ impl<'f, S> WebSocketRead<S> {
   }
 
   /// Reads a frame from the stream.
+  ///
   /// Canceling while this future waits for input bytes leaves the partial frame
-  /// buffered for the next call.
+  /// buffered for the next call. An automatic pong or close reply is retained
+  /// until `send_fn` completes: dropping this future while a reply is being
+  /// sent keeps the reply queued, and the next call resends it before consuming
+  /// more input. A close frame consumed alongside its reply is replayed after
+  /// the reply is acknowledged, as is an error that carries a reply.
+  /// `send_fn` is always offered a complete reply frame, so it must not
+  /// partially emit a frame it does not report as sent; a cancelled send is
+  /// retried with the whole frame.
   pub async fn read_frame<R, E>(
     &mut self,
     send_fn: &mut impl FnMut(Frame<'f>) -> R,
@@ -150,13 +179,16 @@ impl<'f, S> WebSocketRead<S> {
     R: Future<Output = Result<(), E>>,
   {
     loop {
+      match self.read_half.flush_pending_reply(send_fn).await? {
+        Some(PendingOutcome::Frame(frame)) => break Ok(frame),
+        Some(PendingOutcome::Error(error)) => break Err(error),
+        Some(PendingOutcome::Continue) | None => {}
+      }
       let (res, obligated_send) =
         self.read_half.read_frame_inner(&mut self.stream).await;
-      if let Some(frame) = obligated_send {
-        let res = send_fn(frame).await;
-        res.map_err(|e| WebSocketError::SendError(e.into()))?;
-      }
-      if let Some(frame) = res? {
+      if let Some(reply) = obligated_send {
+        self.read_half.store_pending_reply(reply, res);
+      } else if let Some(frame) = res? {
         break Ok(frame);
       }
     }
@@ -238,7 +270,51 @@ impl ReadHalf {
       writev_threshold: 1024,
       max_message_size: 64 << 20,
       buffer,
+      pending_reply: None,
     }
+  }
+
+  /// Sends the retained automatic reply, if any, and reports what to do next.
+  /// The stored reply is cleared only after `send_fn` completes, so dropping
+  /// the returned future while the send is in flight keeps the reply queued
+  /// for the next call. The reply is offered as a copy, so a cancelled send
+  /// is retried with the whole frame.
+  pub(crate) async fn flush_pending_reply<'f, R, E>(
+    &mut self,
+    send_fn: &mut impl FnMut(Frame<'f>) -> R,
+  ) -> Result<Option<PendingOutcome>, WebSocketError>
+  where
+    R: Future<Output = Result<(), E>>,
+    E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+  {
+    let Some(reply) = self
+      .pending_reply
+      .as_ref()
+      .map(|pending| pending.reply.clone_owned())
+    else {
+      return Ok(None);
+    };
+    send_fn(reply).await.map_err(|e| WebSocketError::SendError(e.into()))?;
+    Ok(self.pending_reply.take().map(|pending| pending.outcome))
+  }
+
+  /// Retains an automatic reply together with whatever `read_frame_inner`
+  /// returned alongside it, so cancelling the reply callback loses neither
+  /// the reply obligation nor the already-consumed frame or error.
+  pub(crate) fn store_pending_reply<'a>(
+    &mut self,
+    reply: Frame<'a>,
+    result: Result<Option<Frame<'a>>, WebSocketError>,
+  ) {
+    let outcome = match result {
+      Err(error) => PendingOutcome::Error(error),
+      Ok(None) => PendingOutcome::Continue,
+      Ok(Some(frame)) => PendingOutcome::Frame(frame.into_owned()),
+    };
+    self.pending_reply = Some(PendingReply {
+      reply: reply.into_owned(),
+      outcome,
+    });
   }
 
   /// Attempt to read a single frame from the incoming stream, returning any send obligations if

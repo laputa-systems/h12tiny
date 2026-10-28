@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -59,9 +60,9 @@ impl AsyncRead for ControlledRead {
   }
 }
 
-fn masked_binary_frame(payload: &[u8]) -> Vec<u8> {
+fn masked_frame(first: u8, payload: &[u8]) -> Vec<u8> {
   let mask = [0x13, 0x37, 0x42, 0xa5];
-  let mut frame = vec![0x82];
+  let mut frame = vec![first];
   match payload.len() {
     len @ 0..=125 => frame.push(0x80 | len as u8),
     len @ 126..=65535 => {
@@ -81,6 +82,10 @@ fn masked_binary_frame(payload: &[u8]) -> Vec<u8> {
       .map(|(index, byte)| byte ^ mask[index % mask.len()]),
   );
   frame
+}
+
+fn masked_binary_frame(payload: &[u8]) -> Vec<u8> {
+  masked_frame(0x82, payload)
 }
 
 fn noop_send(
@@ -147,4 +152,139 @@ fn cancellation_while_waiting_for_payload_preserves_frame() {
     b"hello".to_vec(),
     vec![frame[..2].to_vec(), frame[2..6].to_vec()],
   );
+}
+
+#[derive(Clone, Default)]
+struct SendProbe(Arc<Mutex<SendState>>);
+
+#[derive(Default)]
+struct SendState {
+  stalled: bool,
+  sent: Vec<(OpCode, Vec<u8>)>,
+}
+
+fn stallable_send(
+  probe: SendProbe,
+) -> impl for<'frame> FnMut(Frame<'frame>)
+  -> Pin<Box<dyn Future<Output = Result<(), fastwebsockets::WebSocketError>> + 'frame>> {
+  move |frame: Frame<'_>| {
+    let probe = probe.clone();
+    Box::pin(async move {
+      if probe.0.lock().unwrap().stalled {
+        futures_lite::future::pending::<()>().await;
+      }
+      probe
+        .0
+        .lock()
+        .unwrap()
+        .sent
+        .push((frame.opcode, frame.payload.to_vec()));
+      Ok::<(), fastwebsockets::WebSocketError>(())
+    })
+  }
+}
+
+#[test]
+fn cancellation_during_pong_send_resends_reply() {
+  futures_lite::future::block_on(async move {
+    let mut input = masked_frame(0x89, b"hello");
+    input.extend_from_slice(&masked_binary_frame(b"next"));
+    let probe = SendProbe::default();
+    probe.0.lock().unwrap().stalled = true;
+    let control = ReadControl::new([input]);
+    let (mut ws_read, _) = after_handshake_split(
+      ControlledRead(control),
+      futures_lite::io::sink(),
+      Role::Server,
+    );
+    let mut send = stallable_send(probe.clone());
+    let mut pending_read = Box::pin(ws_read.read_frame(&mut send));
+    assert!(futures_lite::future::poll_once(&mut pending_read)
+      .await
+      .is_none());
+    drop(pending_read);
+
+    assert!(probe.0.lock().unwrap().sent.is_empty());
+
+    probe.0.lock().unwrap().stalled = false;
+    let frame = ws_read.read_frame(&mut send).await.unwrap();
+    assert_eq!(frame.opcode, OpCode::Binary);
+    assert_eq!(&*frame.payload, b"next");
+
+    let sent = &probe.0.lock().unwrap().sent;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, OpCode::Pong);
+    assert_eq!(sent[0].1, b"hello");
+  });
+}
+
+#[test]
+fn cancellation_during_close_reply_resends_reply() {
+  futures_lite::future::block_on(async move {
+    let mut payload = 1000u16.to_be_bytes().to_vec();
+    payload.extend_from_slice(b"bye");
+    let input = masked_frame(0x88, &payload);
+    let probe = SendProbe::default();
+    probe.0.lock().unwrap().stalled = true;
+    let control = ReadControl::new([input]);
+    let (mut ws_read, _) = after_handshake_split(
+      ControlledRead(control),
+      futures_lite::io::sink(),
+      Role::Server,
+    );
+    let mut send = stallable_send(probe.clone());
+    let mut pending_read = Box::pin(ws_read.read_frame(&mut send));
+    assert!(futures_lite::future::poll_once(&mut pending_read)
+      .await
+      .is_none());
+    drop(pending_read);
+
+    assert!(probe.0.lock().unwrap().sent.is_empty());
+
+    probe.0.lock().unwrap().stalled = false;
+    let frame = ws_read.read_frame(&mut send).await.unwrap();
+    assert_eq!(frame.opcode, OpCode::Close);
+    assert_eq!(&frame.payload[..2], &1000u16.to_be_bytes());
+
+    let sent = &probe.0.lock().unwrap().sent;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, OpCode::Close);
+    assert_eq!(sent[0].1, payload);
+  });
+}
+
+#[test]
+fn cancellation_during_pong_send_resends_reply_fragment_collector() {
+  futures_lite::future::block_on(async move {
+    let mut input = masked_frame(0x89, b"hello");
+    input.extend_from_slice(&masked_binary_frame(b"next"));
+    let probe = SendProbe::default();
+    probe.0.lock().unwrap().stalled = true;
+    let control = ReadControl::new([input]);
+    let (ws_read, _) = after_handshake_split(
+      ControlledRead(control),
+      futures_lite::io::sink(),
+      Role::Server,
+    );
+    let mut collector =
+      fastwebsockets::FragmentCollectorRead::new(ws_read);
+    let mut send = stallable_send(probe.clone());
+    let mut pending_read = Box::pin(collector.read_frame(&mut send));
+    assert!(futures_lite::future::poll_once(&mut pending_read)
+      .await
+      .is_none());
+    drop(pending_read);
+
+    assert!(probe.0.lock().unwrap().sent.is_empty());
+
+    probe.0.lock().unwrap().stalled = false;
+    let frame = collector.read_frame(&mut send).await.unwrap();
+    assert_eq!(frame.opcode, OpCode::Binary);
+    assert_eq!(&*frame.payload, b"next");
+
+    let sent = &probe.0.lock().unwrap().sent;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, OpCode::Pong);
+    assert_eq!(sent[0].1, b"hello");
+  });
 }

@@ -214,6 +214,42 @@ impl<'f> Frame<'f> {
     }
   }
 
+  /// Copies an automatic reply into an owned frame that outlives the read
+  /// future, so cancelling the reply callback keeps the obligation alive.
+  pub(crate) fn clone_owned(&self) -> Frame<'static> {
+    let payload = match &self.payload {
+      Payload::Borrowed(borrowed) => Payload::Owned(borrowed.to_vec()),
+      Payload::BorrowedMut(borrowed_mut) => Payload::Owned(borrowed_mut.to_vec()),
+      Payload::Owned(owned) => Payload::Owned(owned.clone()),
+      Payload::Bytes(bytes) => Payload::Owned(bytes.to_vec()),
+    };
+    Frame {
+      fin: self.fin,
+      opcode: self.opcode,
+      mask: self.mask,
+      payload,
+    }
+  }
+
+  /// Moves an automatic reply into an owned frame that outlives the read
+  /// future, so cancelling the reply callback keeps the obligation alive.
+  pub(crate) fn into_owned(self) -> Frame<'static> {
+    let payload = match self.payload {
+      Payload::Borrowed(borrowed) => Payload::Owned(borrowed.to_vec()),
+      Payload::BorrowedMut(borrowed_mut) => {
+        Payload::Owned(borrowed_mut.to_vec())
+      }
+      Payload::Owned(owned) => Payload::Owned(owned),
+      Payload::Bytes(bytes) => Payload::Owned(Vec::from(bytes)),
+    };
+    Frame {
+      fin: self.fin,
+      opcode: self.opcode,
+      mask: self.mask,
+      payload,
+    }
+  }
+
   /// Create a new WebSocket pong `Frame`.
   ///
   /// This is a convenience method for `Frame::new(true, OpCode::Pong, None, payload)`.

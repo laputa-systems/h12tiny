@@ -17,6 +17,7 @@ use std::future::Future;
 use crate::error::WebSocketError;
 use crate::frame::Frame;
 use crate::OpCode;
+use crate::PendingOutcome;
 use crate::ReadHalf;
 use crate::WebSocketRead;
 use futures_lite::io::AsyncRead;
@@ -64,6 +65,15 @@ impl<'f, S> FragmentCollectorRead<S> {
   ///
   /// Text frames payload is guaranteed to be valid UTF-8.
   ///
+  /// An automatic pong or close reply is retained until `send_fn` completes:
+  /// dropping this future while a reply is being sent keeps the reply queued,
+  /// and the next call resends it before consuming more input. A close frame
+  /// consumed alongside its reply is replayed through the accumulator after
+  /// the reply is acknowledged, as is an error that carries a reply.
+  /// `send_fn` must
+  /// not partially emit a frame it does not report as sent; a cancelled send is
+  /// retried with the whole frame.
+  ///
   /// # Arguments
   ///
   /// * `send_fn`: Closure must ensure frames are sent by write side of split WebSocket to correctly implement auto-close and auto-pong.
@@ -77,11 +87,23 @@ impl<'f, S> FragmentCollectorRead<S> {
     R: Future<Output = Result<(), E>>,
   {
     loop {
+      match self.read_half.flush_pending_reply(send_fn).await? {
+        Some(PendingOutcome::Frame(frame)) => {
+          if let Some(frame) = self
+            .fragments
+            .accumulate(frame, self.read_half.max_message_size)?
+          {
+            return Ok(frame);
+          }
+        }
+        Some(PendingOutcome::Error(error)) => return Err(error),
+        Some(PendingOutcome::Continue) | None => {}
+      }
       let (res, obligated_send) =
         self.read_half.read_frame_inner(&mut self.stream).await;
-      if let Some(frame) = obligated_send {
-        let res = send_fn(frame).await;
-        res.map_err(|e| WebSocketError::SendError(e.into()))?;
+      if let Some(reply) = obligated_send {
+        self.read_half.store_pending_reply(reply, res);
+        continue;
       }
       let Some(frame) = res? else {
         continue;
