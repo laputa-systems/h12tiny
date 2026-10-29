@@ -26,13 +26,13 @@ exclude = [
 ]
 
 [workspace.dependencies]
-async-io = { package = "laputa-async-io", version = "0.1.0", path = "../smolith/crates/async-io" }
-async-net = { package = "laputa-async-net", version = "0.1.0", path = "../smolith/crates/async-net" }
+async-io = { package = "laputa-async-io", version = "0.2.0" }
+async-net = { package = "laputa-async-net", version = "0.2.0" }
 base64 = "0.22"
 bytes = "1.12.1"
 futures-channel = "0.3.34"
 futures-io = "0.3.34"
-futures-lite = { package = "laputa-futures-lite", version = "0.1.0", path = "../smolith/crates/futures-lite", default-features = false, features = ["std"] }
+futures-lite = { package = "laputa-futures-lite", version = "0.2.0", default-features = false, features = ["std"] }
 futures-rustls = { version = "0.26.0", default-features = false, features = ["tls12"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["async-await", "std"] }
 http = "1.5.0"
@@ -114,7 +114,7 @@ hyper = { workspace = true, features = ["client", "server", "http1", "http2"] }
 rcgen = "0.14"
 rustls = { workspace = true }
 rustls-graviola = { workspace = true }
-smol = { package = "laputa-smol", version = "0.1.0", path = "../smolith/crates/smol" }
+smol = { package = "laputa-smol", version = "0.2.0" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(h12tiny_unstable)"] }
