@@ -19,6 +19,7 @@ env:
 defaults:
   run:
     shell: bash -euo pipefail {0}
+    working-directory: h12tiny
 
 jobs:
   test:
@@ -32,9 +33,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          path: h12tiny
+      - id: smolith-rev
+        run: echo "rev=$(tr -d '[:space:]' < SMOLITH_REV)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: laputa-systems/smolith
+          ref: ${{ steps.smolith-rev.outputs.rev }}
+          path: smolith
+          persist-credentials: false
       # rust-toolchain.toml pins the toolchain; this installs it.
       - run: rustup show active-toolchain
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: h12tiny
       - run: cargo clippy --locked --workspace --all-targets --all-features -- --deny warnings
       - run: cargo test --locked --workspace --all-features
       - run: sh scripts/check-features.sh
@@ -46,5 +58,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+          path: h12tiny
+      - id: smolith-rev
+        run: echo "rev=$(tr -d '[:space:]' < SMOLITH_REV)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: laputa-systems/smolith
+          ref: ${{ steps.smolith-rev.outputs.rev }}
+          path: smolith
           persist-credentials: false
       - run: sh scripts/check-msrv.sh

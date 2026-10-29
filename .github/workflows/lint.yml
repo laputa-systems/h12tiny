@@ -14,6 +14,7 @@ concurrency:
 defaults:
   run:
     shell: bash -euo pipefail {0}
+    working-directory: h12tiny
 
 jobs:
   lint:
@@ -24,6 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+          path: h12tiny
+      - id: smolith-rev
+        run: echo "rev=$(tr -d '[:space:]' < SMOLITH_REV)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: laputa-systems/smolith
+          ref: ${{ steps.smolith-rev.outputs.rev }}
+          path: smolith
           persist-credentials: false
       - name: lint
         run: make lint

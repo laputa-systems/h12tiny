@@ -34,6 +34,14 @@ CI also checks workspace Clippy, feature isolation, and the full normal
 dependency policy on macOS and Linux. A separate Linux job checks the
 declared minimum compiler versions. The fork packages are excluded from the
 h12tiny Cargo workspace, so run their commands above when changing fork code.
+
+CI checks this repository out as `h12tiny/` and the smolith commit named in
+`SMOLITH_REV` as `smolith/`, then runs from `h12tiny`. A local tree needs the
+same siblings: clone smolith next to this repository and check out that
+revision. `SMOLITH_REV` contains only the commit. Path dependencies such as
+`../smolith/crates/async-io` do not fall back to crates.io when that checkout
+is missing.
+
 The inherited Hyper and H2 Tokio integration harnesses require adaptation
 before they can exercise the futures-I/O forks. The focused H2 flow-control
 test uses a futures-I/O transport and checks both `WINDOW_UPDATE` frames after
