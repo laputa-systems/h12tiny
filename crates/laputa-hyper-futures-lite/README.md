@@ -6,7 +6,7 @@ does not require Tokio.
 
 ```toml
 [dependencies]
-hyper = { package = "laputa-hyper-futures-lite", version = "=1.12.0-beta.0", features = ["client", "http1"] }
+hyper = { package = "laputa-hyper-futures-lite", version = "=1.12.0-beta.1", features = ["client", "http1"] }
 ```
 
 Select `client`, `server`, `http1`, and `http2` as needed, or use `full`

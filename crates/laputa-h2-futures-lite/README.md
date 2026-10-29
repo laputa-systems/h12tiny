@@ -7,7 +7,7 @@ connection future.
 
 ```toml
 [dependencies]
-h2 = { package = "laputa-h2-futures-lite", version = "=0.4.20-beta.0" }
+h2 = { package = "laputa-h2-futures-lite", version = "=0.4.20-beta.1" }
 ```
 
 Pass a futures-I/O transport to `client::handshake` or `server::handshake`.

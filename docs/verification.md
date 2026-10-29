@@ -54,7 +54,15 @@ The pinned nightly is the development toolchain; see the
 `make lint` checks workspace Clippy with all targets and features.
 `make publish` bumps h12tiny workspace minor versions, commits and tags the
 release, and publishes h12tiny crates in dependency order. It does not publish
-the fork packages. It checks for a Cargo registry login before starting. It can resume a partial publication while HEAD remains the
+the fork packages. The fork manifests now require smolith crates, at
+`laputa-h2-futures-lite` 0.4.20-beta.1, `laputa-hyper-futures-lite`
+1.12.0-beta.1, and `laputa-fastwebsockets-futures-lite` 0.10.1. Those versions
+are not the registry artifacts, which still depend on upstream runtimes.
+Before an h12tiny release that removes the path dependencies, publish the
+smolith packages, then these forks in that order, and point h12tiny at the
+published versions. Packaging a fork drops `path` and leaves the version
+requirement, so an unpublished version cannot be resolved from crates.io.
+`make publish` checks for a Cargo registry login before starting. It can resume a partial publication while HEAD remains the
 matching release commit. Run it only when releasing, with `TMPDIR` set to the
 repository's `.work/tmp` for its backup files. See the
 [upstream rebase guide](../.agents/skills/rebase-upstreams/SKILL.md) and the

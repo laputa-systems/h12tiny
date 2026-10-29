@@ -18,11 +18,8 @@ declared_rust_version() {
     ' "$1"
 }
 
-check() {
-    manifest=$1
-    shift
-    version=$(declared_rust_version "$manifest")
-    toolchain=$version.0
+ensure_toolchain() {
+    toolchain=$1
     case " $installed_toolchains " in
         *" $toolchain "*) ;;
         *)
@@ -30,7 +27,23 @@ check() {
             installed_toolchains="$installed_toolchains $toolchain"
             ;;
     esac
-    cargo "+$toolchain" check --locked --manifest-path "$manifest" "$@"
+}
+
+check() {
+    manifest=$1
+    shift
+    version=$(declared_rust_version "$manifest")
+    ensure_toolchain "$version.0"
+    cargo "+$version.0" check --locked --manifest-path "$manifest" "$@"
+}
+
+# The forks are excluded from the workspace and do not keep a lockfile.
+check_fork() {
+    manifest=$1
+    shift
+    version=$(declared_rust_version "$manifest")
+    ensure_toolchain "$version.0"
+    cargo "+$version.0" check --manifest-path "$manifest" "$@"
 }
 
 # These components still declare Rust 1.85 as their minimum supported version.
@@ -51,5 +64,9 @@ check crates/h12tiny-client/Cargo.toml --no-default-features --features http1,ht
 check crates/h12tiny-client-sync/Cargo.toml --no-default-features --features tls
 check crates/h12tiny-server/Cargo.toml --no-default-features --features http1,http2,tls
 check crates/h12tiny-web/Cargo.toml --all-features
+
+check_fork crates/laputa-h2-futures-lite/Cargo.toml -p laputa-h2-futures-lite
+check_fork crates/laputa-hyper-futures-lite/Cargo.toml --features full
+check_fork crates/laputa-fastwebsockets-futures-lite/Cargo.toml
 
 printf '%s\n' 'minimum supported Rust version checks passed'

@@ -6,7 +6,7 @@ fragment collector. The crate uses the Apache-2.0 license. See [LICENSE](LICENSE
 
 ```toml
 [dependencies]
-fastwebsockets = { package = "laputa-fastwebsockets-futures-lite", version = "0.10" }
+fastwebsockets = { package = "laputa-fastwebsockets-futures-lite", version = "0.10.1" }
 ```
 
 After completing an HTTP WebSocket handshake, pass your stream halves to

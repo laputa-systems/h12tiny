@@ -752,7 +752,7 @@ version = "0.1.0"
 
 [[package]]
 name = "laputa-fastwebsockets-futures-lite"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bytes",
  "getrandom 0.4.3",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "laputa-h2-futures-lite"
-version = "0.4.20-beta.0"
+version = "0.4.20-beta.1"
 dependencies = [
  "bytes",
  "fnv",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "laputa-hyper-futures-lite"
-version = "1.12.0-beta.0"
+version = "1.12.0-beta.1"
 dependencies = [
  "bytes",
  "futures-channel",

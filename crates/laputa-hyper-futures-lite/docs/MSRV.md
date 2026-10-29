@@ -1,6 +1,6 @@
 # Minimum supported Rust version
 
-The fork manifest declares Rust 1.63. The local verification procedure checks
-Hyper with the repository's pinned nightly, so it does not establish that
-minimum with the resolved dependencies. h12tiny's separate consumer compiler
-requirements and checks are listed in [verification](../../../docs/verification.md).
+The fork manifest declares Rust 1.85 because its smolith dependencies require
+that compiler. `scripts/check-msrv.sh` checks this fork with Rust 1.85. The
+pinned nightly remains the development toolchain. h12tiny's other consumer
+compiler requirements are listed in [verification](../../../docs/verification.md).
