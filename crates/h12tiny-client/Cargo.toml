@@ -34,4 +34,4 @@ h12tiny-tls-system = { version = "0.6.0", path = "../h12tiny-tls-system", option
 [dev-dependencies]
 async-io = { workspace = true }
 futures-lite = { workspace = true }
-smol = "2"
+smol = { package = "laputa-smol", version = "0.1.0", path = "../../../smolith/crates/smol" }

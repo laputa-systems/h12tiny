@@ -27,11 +27,11 @@ bytes = "1.2"
 http = "1"
 http-body = "1"
 futures-io = "0.3"
-futures-lite = { version = "2", default-features = false, features = ["std"] }
+futures-lite = { package = "laputa-futures-lite", version = "0.1.0", path = "../../../smolith/crates/futures-lite", default-features = false, features = ["std"] }
 
 # Optional
 
-atomic-waker = { version = "1.1.2", optional = true }
+atomic-waker = { package = "laputa-atomic-waker", version = "0.1.0", path = "../../../smolith/crates/atomic-waker", optional = true }
 futures-channel = "0.3"
 futures-core = { version = "0.3.31", optional = true }
 h2 = { package = "laputa-h2-futures-lite", version = "=0.4.20-beta.0", path = "../laputa-h2-futures-lite", optional = true }

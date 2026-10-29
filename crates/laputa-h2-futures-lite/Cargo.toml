@@ -42,13 +42,13 @@ members = [
 ]
 
 [dependencies]
-atomic-waker = "1.0.0"
+atomic-waker = { package = "laputa-atomic-waker", version = "0.1.0", path = "../../../smolith/crates/atomic-waker" }
 futures-core = { version = "0.3", default-features = false }
 futures-sink = { version = "0.3", default-features = false }
 log = "0.4"
 pin-project-lite = "0.2"
 futures-io = { version = "0.3", default-features = false }
-futures-lite = { version = "2", default-features = false, features = ["std"] }
+futures-lite = { package = "laputa-futures-lite", version = "0.1.0", path = "../../../smolith/crates/futures-lite", default-features = false, features = ["std"] }
 bytes = "1"
 http = "1.1"
 tracing = { version = "0.1.35", default-features = false, features = ["std"], optional = true }
