@@ -43,7 +43,7 @@ pin-project-lite = "0.2.17"
 # Graviola explicitly. Do not enable Rustls' `custom-provider` feature: Cargo
 # feature unification would otherwise disable another library's unambiguous
 # ring or aws-lc-rs default in the same process.
-rustls = { version = "0.23.43", default-features = false, features = ["std", "tls12"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "tls12"] }
 rustls-graviola = { version = "0.4.0", default-features = false }
 rustls-webpki = { version = "0.103.16", default-features = false }
 rustls-native-certs = "0.8.5"
