@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 17
 
-### H12T-10 · P1 · h12tiny pins laputa 0.2.0 while smolith is at 0.3.0 on a bare-rev pin
-
-- **Area:** Dependencies
-- **Where:** `Cargo.toml:29-35`, `Cargo.toml:117`, `SMOLITH_REV:1`, `crates/h12tiny-client/Cargo.toml:37`
-- **Problem:** h12tiny requires `laputa-async-io`, `laputa-async-net`, `laputa-futures-lite`, and `laputa-smol` at `0.2.0` while smolith workspace is `0.3.0`. CI checks out the smolith sibling by a bare commit hash in `SMOLITH_REV` with whitespace stripping but no hash-format or signature check, and nothing asserts the required `laputa-*` versions exist at that rev. `fixtures/h12tiny.sh` redirects to local paths and masks the mismatch; a crates.io resolve breaks late. Verified: `cat SMOLITH_REV` is `0e94ab1...` and `rg` shows `0.2.0` in four manifests against smolith `0.3.0`.
-- **Recommendation:** Bump h12tiny to `0.3.0` with refreshed lockfiles, and add a pin-bump check asserting the required `laputa-*` versions exist at the pinned rev.
-- **Fix with:** `do`
-- **Effort:** S
-
 ### H12T-11 · P1 · Pool poisons on any panic and H1 slot accounting aborts
 
 - **Area:** Errors

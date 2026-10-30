@@ -51,6 +51,7 @@ jobs:
       - run: cargo test --locked --workspace --all-features
       - run: sh scripts/check-features.sh
       - run: sh scripts/check-normal-dependencies.sh --features full
+      - run: sh scripts/check-smolith-pin.sh
 
   msrv:
     name: Minimum supported Rust versions
