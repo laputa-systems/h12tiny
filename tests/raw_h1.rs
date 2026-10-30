@@ -172,9 +172,23 @@ fn sequential_h1_requests_reuse_one_direct_connection() {
         assert_eq!(first_response.status(), StatusCode::OK);
         drop(first_response);
 
-        // The zero TCP deadline would reject a new socket. A successful
-        // second exchange proves this pooled connection is neither keyed by
-        // options nor subjected to a fresh connection deadline.
+        let origin = format!("http://{address}");
+        let returned = async {
+            loop {
+                if events.drain().iter().any(|event| matches!(
+                    event,
+                    DebugEvent::ConnectionPooled { origin: pooled } if pooled == &origin
+                )) {
+                    break;
+                }
+                smol::future::yield_now().await;
+            }
+        };
+        assert!(matches!(
+            future::select(Box::pin(returned), async_io::Timer::after(Duration::from_secs(2))).await,
+            Either::Left(_)
+        ), "first connection was not returned to the pool");
+
         let second_response = client
             .request_with_options(
                 Request::builder()
@@ -187,10 +201,6 @@ fn sequential_h1_requests_reuse_one_direct_connection() {
             .unwrap();
         assert_eq!(second_response.status(), StatusCode::OK);
         drop(second_response);
-        assert!(events.drain().iter().any(|event| matches!(
-            event,
-            DebugEvent::ConnectionPooled { origin } if origin == &format!("http://{address}")
-        )));
         drop(client);
 
         let deadline = async_io::Timer::after(Duration::from_secs(2));
