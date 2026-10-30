@@ -29,7 +29,7 @@ exclude = [
 [workspace.dependencies]
 async-io = { package = "laputa-async-io", version = "0.3.0" }
 async-net = { package = "laputa-async-net", version = "0.3.0" }
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1.12.1"
 futures-channel = "0.3.34"
 futures-io = "0.3.34"
@@ -101,7 +101,7 @@ h12tiny-web = { version = "0.6.0", path = "crates/h12tiny-web", optional = true,
 [dev-dependencies]
 async-io = { workspace = true }
 async-net = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 bytes = { workspace = true }
 futures-channel = { workspace = true }
 futures-io = { workspace = true }
