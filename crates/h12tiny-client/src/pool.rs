@@ -196,13 +196,13 @@ impl<T: Poolable, K: Key> Pool<T, K> {
             Some(inner) => match value.reserve() {
                 #[cfg(feature = "http2")]
                 Reservation::Shared(to_insert, to_return) => {
-                    let mut locked = inner.lock().expect("pool mutex poisoned");
-                    let pooled = locked.put(
+                    let pooled = Self::put(
+                        inner,
                         connecting.key.clone(),
                         Connection { value: to_insert, h1_slot: None },
-                        inner,
                     ).is_ok();
-                    locked.connected(&connecting.key);
+                    let waiters = inner.lock().expect("pool mutex poisoned").connected(&connecting.key);
+                    drop(waiters);
                     if pooled {
                         if let Some(events) = &self.debug_events {
                             events.record(DebugEvent::ConnectionPooled {
@@ -211,7 +211,6 @@ impl<T: Poolable, K: Key> Pool<T, K> {
                         }
                     }
                     connecting.pool = WeakOpt::none();
-                    drop(locked);
                     drop(connecting.h1_slot.take());
                     (to_return, WeakOpt::none(), None)
                 }
@@ -233,6 +232,49 @@ impl<T: Poolable, K: Key> Pool<T, K> {
             key: connecting.key.clone(),
             pool,
             debug_events: self.debug_events.clone(),
+        }
+    }
+
+    fn put(pool: &Arc<Mutex<Inner<T, K>>>, key: K, mut value: Connection<T, K>) -> Result<(), Connection<T, K>> {
+        loop {
+            let sender = {
+                let mut inner = pool.lock().expect("pool mutex poisoned");
+                if value.value.can_share() && inner.idle.contains_key(&key) {
+                    return Err(value);
+                }
+                let sender = inner.waiters.get_mut(&key).and_then(VecDeque::pop_front);
+                if inner.waiters.get(&key).is_some_and(VecDeque::is_empty) {
+                    inner.waiters.remove(&key);
+                }
+                if sender.is_none() {
+                    let now = inner.now();
+                    let max_idle = inner.max_idle_per_host;
+                    let list = inner.idle.entry(key).or_default();
+                    if list.len() >= max_idle {
+                        return Err(value);
+                    }
+                    list.push(Idle { value, idle_at: now });
+                    inner.spawn_idle_interval(pool);
+                    return Ok(());
+                }
+                sender.expect("sender was checked")
+            };
+            match value.value.reserve() {
+                #[cfg(feature = "http2")]
+                Reservation::Shared(to_keep, to_send) => {
+                    value = Connection { value: to_keep, h1_slot: None };
+                    if let Err(returned) = sender.send(Connection { value: to_send, h1_slot: None }) {
+                        value = returned;
+                    }
+                }
+                Reservation::Unique(to_send) => {
+                    let candidate = Connection { value: to_send, h1_slot: value.h1_slot };
+                    match sender.send(candidate) {
+                        Ok(()) => return Ok(()),
+                        Err(returned) => { value = returned; continue; }
+                    }
+                }
+            }
         }
     }
 
@@ -373,61 +415,6 @@ impl<T: Poolable, K: Key> Inner<T, K> {
             .map_or_else(Instant::now, |timer| timer.now())
     }
 
-    fn put(
-        &mut self,
-        key: K,
-        value: Connection<T, K>,
-        pool: &Arc<Mutex<Self>>,
-    ) -> Result<(), Connection<T, K>> {
-        if value.value.can_share() && self.idle.contains_key(&key) {
-            return Err(value);
-        }
-
-        let mut value = Some(value);
-        let mut remove_waiters = false;
-        if let Some(waiters) = self.waiters.get_mut(&key) {
-            while let Some(sender) = waiters.pop_front() {
-                if sender.is_canceled() {
-                    continue;
-                }
-                let candidate = value.take().expect("connection was consumed twice");
-                let reserved = match candidate.value.reserve() {
-                    #[cfg(feature = "http2")]
-                    Reservation::Shared(to_keep, to_send) => {
-                        value = Some(Connection { value: to_keep, h1_slot: None });
-                        to_send
-                    }
-                    Reservation::Unique(value) => value,
-                };
-                match sender.send(Connection { value: reserved, h1_slot: candidate.h1_slot }) {
-                    Ok(()) if value.is_none() => break,
-                    Ok(()) => continue,
-                    Err(returned) => value = Some(returned),
-                }
-            }
-            remove_waiters = waiters.is_empty();
-        }
-        if remove_waiters {
-            self.waiters.remove(&key);
-        }
-
-        if let Some(value) = value {
-            let now = self.now();
-            let list = self.idle.entry(key).or_default();
-            if list.len() >= self.max_idle_per_host {
-                return Err(value);
-            }
-            list.push(Idle {
-                value,
-                idle_at: now,
-            });
-            self.spawn_idle_interval(pool);
-            Ok(())
-        } else {
-            Ok(())
-        }
-    }
-
     fn reserve_h1_slot(&mut self, key: &K) -> Option<H1Slot<K>> {
         if self.max_h1_connections_per_host == 0 {
             return None;
@@ -452,16 +439,16 @@ impl<T: Poolable, K: Key> Inner<T, K> {
     /// dropping their senders. Their parent client futures then retry rather
     /// than remaining parked behind a cancelled connecting task.
     #[cfg_attr(not(feature = "http2"), allow(dead_code))]
-    fn connected(&mut self, key: &K) {
+    fn connected(&mut self, key: &K) -> Option<VecDeque<oneshot::Sender<Connection<T, K>>>> {
         self.connecting.remove(key);
-        self.waiters.remove(key);
+        self.waiters.remove(key)
     }
 
-    fn connecting_cancelled(&mut self, key: &K, h1_slot: bool) {
+    fn connecting_cancelled(&mut self, key: &K, h1_slot: bool) -> Option<VecDeque<oneshot::Sender<Connection<T, K>>>> {
         if !h1_slot {
             self.connecting.remove(key);
         }
-        self.waiters.remove(key);
+        self.waiters.remove(key)
     }
 
     fn clean_waiters(&mut self, key: &K) {
@@ -573,10 +560,7 @@ impl<T: Poolable, K: Key> Drop for Pooled<T, K> {
             return;
         }
         if let Some(pool) = self.pool.upgrade() {
-            let result = {
-                let mut inner = pool.lock().expect("pool mutex poisoned");
-                inner.put(self.key.clone(), value, &pool)
-            };
+            let result = Pool::put(&pool, self.key.clone(), value);
             if result.is_ok() {
                 if let Some(events) = &self.debug_events {
                     events.record(DebugEvent::ConnectionPooled { origin: self.key.origin() });
@@ -803,9 +787,8 @@ impl<T: Poolable, K: Key> Connecting<T, K> {
 impl<T: Poolable, K: Key> Drop for Connecting<T, K> {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.upgrade() {
-            if let Ok(mut inner) = pool.lock() {
-                inner.connecting_cancelled(&self.key, self.h1_slot.is_some());
-            }
+            let waiters = pool.lock().ok().and_then(|mut inner| inner.connecting_cancelled(&self.key, self.h1_slot.is_some()));
+            drop(waiters);
         }
     }
 }
@@ -1440,6 +1423,47 @@ mod slot_regressions {
     struct LockProbe {
         pool: Pool<Unique, String>,
         wakes: AtomicUsize,
+    }
+
+    struct HandoffProbe {
+        pool: Pool<Unique, String>,
+        locked: AtomicBool,
+        wakes: AtomicUsize,
+    }
+
+    impl Wake for HandoffProbe {
+        fn wake(self: Arc<Self>) {
+            self.locked.fetch_or(self.pool.inner.as_ref().unwrap().try_lock().is_err(), Ordering::SeqCst);
+            self.wakes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn handoff_wakes_after_unlocking_the_pool() {
+        let pool = pool();
+        let key = "origin".to_owned();
+        let held = pool.pooled(pool.connecting(&key, Protocol::Http1).unwrap(), socket());
+        let mut checkout = pool.checkout(key);
+        let probe = Arc::new(HandoffProbe { pool: pool.clone(), locked: AtomicBool::new(false), wakes: AtomicUsize::new(0) });
+        let waker = probe.clone().into();
+        assert!(Pin::new(&mut checkout).poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(held);
+        assert_eq!(probe.wakes.load(Ordering::SeqCst), 1);
+        assert!(!probe.locked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn connecting_cancellation_wakes_after_unlocking_the_pool() {
+        let pool = pool();
+        let key = "origin".to_owned();
+        let owner = pool.connecting(&key, Protocol::Http1).unwrap();
+        let mut checkout = pool.checkout(key);
+        let probe = Arc::new(HandoffProbe { pool: pool.clone(), locked: AtomicBool::new(false), wakes: AtomicUsize::new(0) });
+        let waker = probe.clone().into();
+        assert!(Pin::new(&mut checkout).poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(owner);
+        assert!(probe.wakes.load(Ordering::SeqCst) > 0);
+        assert!(!probe.locked.load(Ordering::SeqCst));
     }
 
     impl Wake for LockProbe {
