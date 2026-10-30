@@ -35,12 +35,10 @@ dependency policy on macOS and Linux. A separate Linux job checks the
 declared minimum compiler versions. The fork packages are excluded from the
 h12tiny Cargo workspace, so run their commands above when changing fork code.
 
-CI checks this repository out as `h12tiny/` and the smolith commit named in
-`SMOLITH_REV` as `smolith/`, then runs from `h12tiny`. A local tree needs the
-same siblings: clone smolith next to this repository and check out that
-revision. `SMOLITH_REV` contains only the commit. Path dependencies such as
-`../smolith/crates/async-io` do not fall back to crates.io when that checkout
-is missing.
+The root workspace and protocol forks resolve `laputa-*` runtime crates from
+crates.io. A local smolith checkout is not required for these commands.
+The smolith repository's `fixtures/h12tiny.sh` separately tests an h12tiny
+checkout with runtime dependencies redirected to local smolith crates.
 
 The inherited Hyper and H2 Tokio integration harnesses require adaptation
 before they can exercise the futures-I/O forks. The focused H2 flow-control
