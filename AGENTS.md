@@ -31,3 +31,4 @@ Tokio-free Rust HTTP components: a futures-I/O client and server, a separate blo
 - Rustls defaults and custom configuration: [TLS configuration](docs/tls.md)
 - Build, tests, feature gates, and coverage: [verification](docs/verification.md)
 - External interoperability and performance tools: [scripts guide](scripts/README.md)
+- Production bounds and lifecycle proposal: [H12T-12 RFC](docs/rfc/H12T-12-production-bounds.md)

@@ -37,8 +37,9 @@ h12tiny Cargo workspace, so run their commands above when changing fork code.
 
 The root workspace and protocol forks resolve `laputa-*` runtime crates from
 crates.io. A local smolith checkout is not required for these commands.
-The smolith repository's `fixtures/h12tiny.sh` separately tests an h12tiny
-checkout with runtime dependencies redirected to local smolith crates.
+The smolith repository separately tests an h12tiny checkout, with
+runtime dependencies redirected to local smolith crates, using its `h12tiny.sh`
+fixture script.
 
 The inherited Hyper and H2 Tokio integration harnesses require adaptation
 before they can exercise the futures-I/O forks. The focused H2 flow-control
