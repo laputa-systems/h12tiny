@@ -10,8 +10,9 @@
 # unexpected fails loudly before anything is edited.
 # One commit carries the release and each crate gets a <name>-v<version> tag.
 # Re-running after a partial publish finishes the remaining crates instead
-# of failing. A missing registry login fails before any registry query or
-# file edit.
+# of failing. A crates.io 429 throttle waits for the server's retry time and
+# resumes instead of aborting. A missing registry login fails before any
+# registry query or file edit.
 
 set -eu
 LC_ALL=C
@@ -26,7 +27,7 @@ SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P) || fail "cannot locate s
 ROOT=$(CDPATH= cd -P "$SCRIPT_DIR/.." && pwd -P) || fail "cannot locate repository root"
 cd "$ROOT"
 
-for command_name in awk cargo cp dirname git grep mkdir mv rm sed sort; do
+for command_name in awk cargo cp dirname git grep mkdir mv python3 rm sed sleep sort; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
 
@@ -132,12 +133,74 @@ map_get() {
     printf '%s\n' "$1" | awk -v key="$2" -F= '$1 == key { print substr($0, length($1) + 2); found = 1; exit } END { exit !found }'
 }
 
+is_rate_limited() {
+    # Detects a crates.io throttle in captured cargo output.
+    printf '%s' "$1" | grep -qi -e 'status 429' -e 'too many requests' -e 'try again after'
+}
+
+rate_limit_wait_secs() {
+    # Prints how long to wait for the throttle described in $1. Parses the
+    # "try again after <date>" deadline crates.io embeds in the 429 body and
+    # waits until then plus a buffer. Falls back to the documented refill
+    # rate (10 minutes for new crates, 1 minute for new versions) when the
+    # deadline does not parse.
+    printf '%s' "$1" | python3 -c '
+import re
+import sys
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import math
+text = sys.stdin.read()
+low = text.lower()
+fallback = 610 if "new crate" in low else 70
+match = re.search(r"try again after\s+(.+?)(?:\s+and see|\s+or email|\.\s*|\.$|$)", text, re.IGNORECASE | re.DOTALL)
+if not match:
+    print(fallback)
+    sys.exit(0)
+date_str = match.group(1).strip().rstrip(".").strip().splitlines()[0].strip()
+try:
+    target = parsedate_to_datetime(date_str)
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    wait = (target - datetime.now(timezone.utc)).total_seconds() + 10
+    if wait < 5:
+        wait = 5
+    print(math.ceil(wait))
+except Exception:
+    print(fallback)
+'
+}
+
+is_transient_publish_failure() {
+    # Detects failures worth retrying briefly: the sparse index has not
+    # caught up with a dependency published seconds ago, or the registry
+    # answered with a short-lived 5xx or network hiccup. Anything else fails
+    # fast so real validation errors stay loud.
+    printf '%s' "$1" | grep -qi -e 'no matching package' -e 'failed to select a version' -e 'unknown crate' -e 'spurious network' -e 'connection reset' -e 'timed out' -e 'status 5[0-9][0-9]' -e 'failed to get'
+}
+
 registry_latest() {
     # Prints the latest registry version of $1, or nothing when the crate
-    # has never been published. A failed query still fails loudly.
+    # has never been published. A failed query still fails loudly, but a
+    # 429 throttle waits for the server's retry time and tries again instead
+    # of aborting a long release.
     # Standard error is captured so cargo's informational notes stay out of
     # release output; it is reported when the query itself fails.
-    search_result=$(cargo search "$1" --limit 1 2>&1) || fail "could not query the default Cargo registry for $1: $search_result"
+    attempt=1
+    while true; do
+        if search_result=$(cargo search "$1" --limit 1 2>&1); then
+            break
+        fi
+        if is_rate_limited "$search_result"; then
+            wait_secs=$(rate_limit_wait_secs "$search_result") || wait_secs=70
+            case "$wait_secs" in ''|*[!0-9]*) wait_secs=70 ;; esac
+            printf '%s\n' "Rate limited querying registry for $1 (attempt $attempt); waiting ${wait_secs}s" >&2
+            sleep "$wait_secs"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        fail "could not query the default Cargo registry for $1: $search_result"
+    done
     printf '%s\n' "$search_result" | awk -v package_name="$1" '
         $1 == package_name && $2 == "=" && $3 ~ /^".+"$/ {
             version = substr($3, 2, length($3) - 2)
@@ -232,16 +295,89 @@ plan_next() {
     '
 }
 
+dry_run_package() {
+    # Dry-runs $1, waiting through throttles and briefly retrying index lag
+    # so a dependency published seconds ago has time to appear.
+    attempt=1
+    while true; do
+        if dry_output=$(cargo publish -p "$1" --dry-run --allow-dirty 2>&1); then
+            printf '%s\n' "$dry_output"
+            return 0
+        fi
+        if is_rate_limited "$dry_output"; then
+            wait_secs=$(rate_limit_wait_secs "$dry_output") || wait_secs=70
+            case "$wait_secs" in ''|*[!0-9]*) wait_secs=70 ;; esac
+            printf '%s\n' "Rate limited dry-running $1 (attempt $attempt); waiting ${wait_secs}s"
+            sleep "$wait_secs"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        if [ "$attempt" -lt 20 ] && is_transient_publish_failure "$dry_output"; then
+            printf '%s\n' "Transient failure dry-running $1 (attempt $attempt); waiting 30s"
+            printf '%s\n' "$dry_output" | sed -n '1,10p'
+            sleep 30
+            attempt=$((attempt + 1))
+            continue
+        fi
+        printf '%s\n' "$dry_output" >&2
+        fail "could not dry-run $1"
+    done
+}
+
 publish_package() {
     # Publishes $1 at $2 unless the registry already has it, so a re-run
-    # after a partial publish finishes the remaining crates.
+    # after a partial publish finishes the remaining crates. A 429 throttle
+    # waits for the server's retry time and tries again for as long as it
+    # takes instead of aborting the release.
     already_published=$(registry_latest "$1") || exit 1
     if [ -n "$already_published" ] && version_at_least "$already_published" "$2"; then
         printf '%s\n' "$1 $2 is already published; skipping"
         return 0
     fi
     printf '%s\n' "Publishing $1 $2"
-    cargo publish -p "$1"
+    attempt=1
+    transient_attempt=1
+    while true; do
+        if publish_output=$(cargo publish -p "$1" 2>&1); then
+            printf '%s\n' "$publish_output"
+            return 0
+        fi
+        case "$publish_output" in
+            *'already exists'*|*'already uploaded'*|*'already on crates.io'*)
+                printf '%s\n' "$1 $2 is already published; skipping"
+                printf '%s\n' "$publish_output"
+                return 0
+                ;;
+        esac
+        if is_rate_limited "$publish_output"; then
+            wait_secs=$(rate_limit_wait_secs "$publish_output") || wait_secs=70
+            case "$wait_secs" in ''|*[!0-9]*) wait_secs=70 ;; esac
+            printf '%s\n' "Rate limited publishing $1 $2 (attempt $attempt); waiting ${wait_secs}s"
+            printf '%s\n' "$publish_output" | grep -i -e '429' -e 'try again after' | sed -n '1,5p'
+            sleep "$wait_secs"
+            attempt=$((attempt + 1))
+            already_published=$(registry_latest "$1") || exit 1
+            if [ -n "$already_published" ] && version_at_least "$already_published" "$2"; then
+                printf '%s\n' "$1 $2 is already published; skipping"
+                return 0
+            fi
+            continue
+        fi
+        if [ "$transient_attempt" -lt 20 ] && is_transient_publish_failure "$publish_output"; then
+            printf '%s\n' "Transient failure publishing $1 $2 (attempt $transient_attempt); waiting 30s"
+            printf '%s\n' "$publish_output" | sed -n '1,10p'
+            sleep 30
+            transient_attempt=$((transient_attempt + 1))
+            already_published=$(registry_latest "$1") || exit 1
+            if [ -n "$already_published" ] && version_at_least "$already_published" "$2"; then
+                printf '%s\n' "$1 $2 is already published; skipping"
+                return 0
+            fi
+            continue
+        fi
+        printf '%s\n' "$publish_output" >&2
+        fail "could not publish $1 $2"
+    done
 }
 
 ensure_tag() {
@@ -611,7 +747,7 @@ done
 
 cargo check --workspace --quiet
 for name in $LEAVES; do
-    cargo publish -p "$name" --dry-run --allow-dirty
+    dry_run_package "$name"
 done
 # shellcheck disable=SC2086
 git add -- $RESET_PATHS
@@ -627,6 +763,6 @@ done
 # after the release commit.
 for name in $TOPO_ORDER; do
     next_version=$(map_get "$NEXT_VERS" "$name" "=") || fail "no planned version for $name"
-    cargo publish -p "$name" --dry-run --allow-dirty
+    dry_run_package "$name"
     publish_package "$name" "$next_version"
 done
