@@ -1,15 +1,6 @@
 Prefix: H12T
 Next: 17
 
-### H12T-11 · P1 · Pool poisons on any panic and H1 slot accounting aborts
-
-- **Area:** Errors
-- **Where:** `crates/h12tiny-client/src/pool.rs:165`, `crates/h12tiny-client/src/pool.rs:333-334`, `crates/h12tiny-client/src/pool.rs:471`
-- **Problem:** Every checkout/put/evict path uses `lock().expect("pool mutex poisoned")`, so one panicking waker or holder poisons the process-wide pool permanently. `H1Slot::Drop` turns double-release or underflow into `expect`/`assert` abort instead of a typed error, and `clear_expired` assumes `timeout.is_some()` via `expect`, coupling two separately set `Option`s. Verified by `rg` on `pool.rs`.
-- **Recommendation:** Handle `lock()` poisoning (`into_inner` plus evict, or typed `PoolError`); replace slot double-release `expect`/`assert` with `debug_assert` plus a graceful leak counter; make `timeout` non-optional when the idle task exists.
-- **Fix with:** `error-model`
-- **Effort:** M
-
 ### H12T-12 · P1 · Unbounded retry, fail-open defaults, and deadline-free shutdown
 
 - **Area:** Concurrency

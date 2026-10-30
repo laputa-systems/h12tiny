@@ -162,7 +162,7 @@ impl<T: Poolable, K: Key> Pool<T, K> {
     /// waiters.
     pub(crate) fn connecting(&self, key: &K, protocol: Protocol) -> Option<Connecting<T, K>> {
         if let Some(inner) = &self.inner {
-            let mut locked = inner.lock().expect("pool mutex poisoned");
+            let mut locked = lock_pool(inner);
             if protocol == Protocol::Http2 {
                 if !locked.connecting.insert(key.clone()) {
                     return None;
@@ -201,7 +201,7 @@ impl<T: Poolable, K: Key> Pool<T, K> {
                         connecting.key.clone(),
                         Connection { value: to_insert, h1_slot: None },
                     ).is_ok();
-                    let waiters = inner.lock().expect("pool mutex poisoned").connected(&connecting.key);
+                    let waiters = lock_pool(inner).connected(&connecting.key);
                     drop(waiters);
                     if pooled {
                         if let Some(events) = &self.debug_events {
@@ -238,7 +238,7 @@ impl<T: Poolable, K: Key> Pool<T, K> {
     fn put(pool: &Arc<Mutex<Inner<T, K>>>, key: K, mut value: Connection<T, K>) -> Result<(), Connection<T, K>> {
         loop {
             let sender = {
-                let mut inner = pool.lock().expect("pool mutex poisoned");
+                let mut inner = lock_pool(pool);
                 if value.value.can_share() && inner.idle.contains_key(&key) {
                     return Err(value);
                 }
@@ -297,6 +297,24 @@ impl<T: Poolable, K: Key> Pool<T, K> {
     }
 }
 
+fn lock_pool<T, K: Key>(
+    pool: &Arc<Mutex<Inner<T, K>>>,
+) -> std::sync::MutexGuard<'_, Inner<T, K>> {
+    match pool.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn lock_h1_slots<K: Key>(
+    slots: &Arc<Mutex<HashMap<K, H1Slots>>>,
+) -> std::sync::MutexGuard<'_, HashMap<K, H1Slots>> {
+    match slots.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 impl<T, K: Key> Clone for Pool<T, K> {
     fn clone(&self) -> Self {
         Self {
@@ -329,10 +347,15 @@ struct H1Slot<K: Key> {
 impl<K: Key> Drop for H1Slot<K> {
     fn drop(&mut self) {
         let waiters = {
-            let mut slots = self.slots.lock().expect("H1 slots mutex poisoned");
-            let state = slots.get_mut(&self.key).expect("H1 slot was released twice");
-            assert!(state.count > 0, "H1 slot was released twice");
-            state.count -= 1;
+            let mut slots = lock_h1_slots(&self.slots);
+            let Some(state) = slots.get_mut(&self.key) else {
+                debug_assert!(false, "H1 slot was released twice");
+                return;
+            };
+            debug_assert!(state.count > 0, "H1 slot was released twice");
+            // Saturating so a double release in release mode cannot underflow;
+            // the corrupt entry is reaped below instead of aborting.
+            state.count = state.count.saturating_sub(1);
             state.notification.released.fetch_add(1, Ordering::AcqRel);
             state.waiters.retain(|waiter| waiter.strong_count() > 0);
             let live = state.waiters.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
@@ -419,7 +442,7 @@ impl<T: Poolable, K: Key> Inner<T, K> {
         if self.max_h1_connections_per_host == 0 {
             return None;
         }
-        let mut slots = self.h1_connections.lock().expect("H1 slots mutex poisoned");
+        let mut slots = lock_h1_slots(&self.h1_connections);
         let state = slots.entry(key.clone()).or_insert_with(|| H1Slots {
             count: 0,
             notification: Arc::new(SlotNotification::default()),
@@ -468,7 +491,9 @@ impl<T: Poolable, K: Key> Inner<T, K> {
     // Return evictions to the caller so their slot-release callbacks run
     // after the caller releases the pool mutex.
     fn clear_expired(&mut self) -> Vec<Connection<T, K>> {
-        let timeout = self.timeout.expect("idle task requires a timeout");
+        let Some(timeout) = self.timeout else {
+            return Vec::new();
+        };
         let now = self.now();
         let debug_events = self.debug_events.clone();
         let mut discarded = Vec::new();
@@ -648,11 +673,11 @@ impl<T: Poolable, K: Key> Checkout<T, K> {
         let Some(inner) = &self.pool.inner else {
             return Poll::Pending;
         };
-        let inner = inner.lock().expect("pool mutex poisoned");
+        let inner = lock_pool(inner);
         if inner.max_h1_connections_per_host == 0 || inner.connecting.contains(&self.key) {
             return Poll::Pending;
         }
-        let mut slots = inner.h1_connections.lock().expect("H1 slots mutex poisoned");
+        let mut slots = lock_h1_slots(&inner.h1_connections);
         let Some(state) = slots.get_mut(&self.key) else {
             return Poll::Ready(());
         };
@@ -686,7 +711,7 @@ impl<T: Poolable, K: Key> Checkout<T, K> {
         let mut discarded = Vec::new();
         let entry = {
             let inner = self.pool.inner.as_ref()?;
-            let mut inner = inner.lock().expect("pool mutex poisoned");
+            let mut inner = lock_pool(inner);
             let now = inner.now();
             let expiration = Expiration(inner.timeout);
             let debug_events = inner.debug_events.clone();
@@ -743,7 +768,7 @@ impl<T: Poolable, K: Key> Future for Checkout<T, K> {
         {
             drop(self.waiter.take());
             if let Some(inner) = &self.pool.inner {
-                inner.lock().expect("pool mutex poisoned").clean_waiters(&self.key);
+                lock_pool(inner).clean_waiters(&self.key);
             }
             self.slot_waiter = None;
             Poll::Ready(Err(CheckoutError::NoLongerWanted))
@@ -757,9 +782,7 @@ impl<T: Poolable, K: Key> Drop for Checkout<T, K> {
     fn drop(&mut self) {
         if self.waiter.take().is_some() {
             if let Some(inner) = &self.pool.inner {
-                if let Ok(mut inner) = inner.lock() {
-                    inner.clean_waiters(&self.key);
-                }
+                lock_pool(inner).clean_waiters(&self.key);
             }
         }
     }
@@ -787,7 +810,7 @@ impl<T: Poolable, K: Key> Connecting<T, K> {
 impl<T: Poolable, K: Key> Drop for Connecting<T, K> {
     fn drop(&mut self) {
         if let Some(pool) = self.pool.upgrade() {
-            let waiters = pool.lock().ok().and_then(|mut inner| inner.connecting_cancelled(&self.key, self.h1_slot.is_some()));
+            let waiters = lock_pool(&pool).connecting_cancelled(&self.key, self.h1_slot.is_some());
             drop(waiters);
         }
     }
@@ -820,7 +843,7 @@ impl<T: Poolable, K: Key> IdleTask<T, K> {
                 future::Either::Left(_) => break,
                 future::Either::Right(((), _)) => {
                     if let Some(pool) = self.pool.upgrade() {
-                        let discarded = pool.lock().expect("pool mutex poisoned").clear_expired();
+                        let discarded = lock_pool(&pool).clear_expired();
                         drop(discarded);
                     }
                     self.timer
@@ -1233,6 +1256,90 @@ mod tests {
         let second = block_on(pool.checkout(key)).unwrap();
         assert_eq!(*first, Shared(9));
         assert_eq!(*second, Shared(9));
+    }
+
+    #[test]
+    fn poisoned_pool_mutex_recovers_instead_of_aborting() {
+        let pool = pool();
+        let key = "example.test".to_owned();
+        let inner = pool.inner.as_ref().unwrap().clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = inner.lock().unwrap();
+            panic!("intentional pool poison for H12T-11");
+        })
+        .join();
+        assert!(pool.inner.as_ref().unwrap().is_poisoned());
+        let connecting = pool.connecting(&key, Protocol::Http1);
+        assert!(connecting.is_some());
+        let mut checkout = pool.checkout(key.clone());
+        assert!(poll_once(&mut checkout).is_pending());
+        drop(checkout);
+        if let Some(c) = connecting {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(pool.pooled(c, Unique(1)));
+            }));
+            assert!(result.is_ok(), "put after pool poison panicked");
+        }
+        let checked = block_on(pool.checkout(key));
+        assert!(checked.is_ok());
+    }
+
+    #[test]
+    fn idle_task_with_no_timeout_does_not_panic() {
+        let pool = pool();
+        let key = "example.test".to_owned();
+        drop(pool.pooled(connecting(key.clone()), Unique(3)));
+        {
+            let inner = pool
+                .inner
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            assert!(inner.idle.contains_key(&key));
+            assert!(inner.idle_interval_ref.is_none());
+        }
+        {
+            let mut inner = pool
+                .inner
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let discarded = inner.clear_expired();
+            assert!(discarded.is_empty());
+            assert!(inner.idle.contains_key(&key));
+        }
+    }
+
+    #[test]
+    fn h1_double_release_does_not_abort() {
+        let pool = capped_h1_pool(1);
+        let key = "example.test".to_owned();
+        let owner = pool.connecting(&key, Protocol::Http1).unwrap();
+        let slots = pool
+            .inner
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .h1_connections
+            .clone();
+        drop(owner);
+        let duplicate = super::H1Slot {
+            key: key.clone(),
+            slots,
+        };
+        let _result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(duplicate);
+        }));
+        #[cfg(not(debug_assertions))]
+        assert!(_result.is_ok(), "H1 double release aborted in release");
+        let replacement = pool.connecting(&key, Protocol::Http1);
+        assert!(
+            replacement.is_some(),
+            "pool unusable after double-release handling"
+        );
     }
 }
 
