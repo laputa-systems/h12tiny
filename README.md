@@ -6,12 +6,12 @@ helpers, and a small optional router.
 
 ## Add it
 
-The facade is version 0.3 and has no default features. Select the roles and
+The facade is version 0.6 and has no default features. Select the roles and
 protocols your application needs:
 
 ```toml
 [dependencies]
-h12tiny = { version = "0.3", default-features = false, features = [
+h12tiny = { version = "0.6", default-features = false, features = [
   "client", "http1", "tls", "util",
 ] }
 bytes = "1"
