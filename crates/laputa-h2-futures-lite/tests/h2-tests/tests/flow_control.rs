@@ -7,7 +7,7 @@ use std::sync::{
     Arc, Barrier,
 };
 use std::task::{Context, Poll};
-use tokio::sync::oneshot;
+use futures::channel::oneshot;
 
 const LOST_WAKE_FIRST_DATA: &[u8] = b"lost-wakeup-first-data";
 const LOST_WAKE_SECOND_DATA: &[u8] = b"lost-wakeup-second-data";
@@ -72,8 +72,8 @@ impl AsyncRead for FlushInterleaveIo {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut tokio_io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
     }
 }
@@ -95,15 +95,16 @@ impl AsyncWrite for FlushInterleaveIo {
         Pin::new(&mut this.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_close(cx)
     }
 }
 
 // In this case, the stream & connection both have capacity, but capacity is not
 // explicitly requested.
-#[tokio::test]
-async fn send_data_without_requesting_capacity() {
+#[test]
+fn send_data_without_requesting_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0; 1024];
@@ -146,10 +147,12 @@ async fn send_data_without_requesting_capacity() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn release_capacity_sends_window_update() {
+#[test]
+fn release_capacity_sends_window_update() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0u8; 16_384];
@@ -213,10 +216,12 @@ async fn release_capacity_sends_window_update() {
         .await
     };
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn window_updates_include_padded_length() {
+#[test]
+fn window_updates_include_padded_length() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     // Our manual way of sending padding frames, not supported publicly
@@ -291,10 +296,12 @@ async fn window_updates_include_padded_length() {
         .await
     };
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn release_capacity_of_small_amount_does_not_send_window_update() {
+#[test]
+fn release_capacity_of_small_amount_does_not_send_window_update() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = [0; 16];
@@ -338,6 +345,7 @@ async fn release_capacity_of_small_amount_does_not_send_window_update() {
         join(async move { h2.await.unwrap() }, req).await;
     };
     join(mock, h2).await;
+    });
 }
 
 #[test]
@@ -348,8 +356,9 @@ fn expand_window_sends_window_update() {}
 #[ignore]
 fn expand_window_calls_are_coalesced() {}
 
-#[tokio::test]
-async fn recv_data_overflows_connection_window() {
+#[test]
+fn recv_data_overflows_connection_window() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -408,10 +417,12 @@ async fn recv_data_overflows_connection_window() {
         join(conn, req).await;
     };
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_data_overflows_stream_window() {
+#[test]
+fn recv_data_overflows_stream_window() {
+    h2_support::run(async {
     // this tests for when streams have smaller windows than their connection
     h2_support::trace_init!();
 
@@ -460,6 +471,7 @@ async fn recv_data_overflows_stream_window() {
         join(async move { conn.await.unwrap() }, req).await;
     };
     join(mock, h2).await;
+    });
 }
 
 #[test]
@@ -468,8 +480,9 @@ fn recv_window_update_causes_overflow() {
     // A received window update causes the window to overflow.
 }
 
-#[tokio::test]
-async fn stream_error_release_connection_capacity() {
+#[test]
+fn stream_error_release_connection_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -542,10 +555,12 @@ async fn stream_error_release_connection_capacity() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_stream_drop_releases_only_buffered_connection_capacity() {
+#[test]
+fn recv_stream_drop_releases_only_buffered_connection_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     const FRAME_LEN: usize = 16_384;
@@ -597,11 +612,13 @@ async fn recv_stream_drop_releases_only_buffered_connection_capacity() {
             join(peer, server).await;
         }
     }
+    });
 }
 
 // Regression test for TODO
-#[tokio::test]
-async fn padded_data_stream_error_releases_connection_capacity() {
+#[test]
+fn padded_data_stream_error_releases_connection_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -680,11 +697,13 @@ async fn padded_data_stream_error_releases_connection_capacity() {
     };
 
     join(srv, client).await;
+    });
 }
 
 // Regression test for TODO
-#[tokio::test]
-async fn padded_data_on_forgotten_stream_releases_connection_capacity() {
+#[test]
+fn padded_data_on_forgotten_stream_releases_connection_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -739,10 +758,12 @@ async fn padded_data_on_forgotten_stream_releases_connection_capacity() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn stream_close_by_data_frame_releases_capacity() {
+#[test]
+fn stream_close_by_data_frame_releases_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -811,10 +832,12 @@ async fn stream_close_by_data_frame_releases_capacity() {
         srv.recv_frame(frames::data(3, &b"hello"[..]).eos()).await;
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn stream_close_by_trailers_frame_releases_capacity() {
+#[test]
+fn stream_close_by_trailers_frame_releases_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -882,10 +905,12 @@ async fn stream_close_by_trailers_frame_releases_capacity() {
         srv.recv_frame(frames::data(3, &b"hello"[..]).eos()).await;
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn stream_close_by_send_reset_frame_releases_capacity() {
+#[test]
+fn stream_close_by_send_reset_frame_releases_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -937,14 +962,16 @@ async fn stream_close_by_send_reset_frame_releases_capacity() {
     };
 
     join(srv, client).await;
+    });
 }
 
 #[test]
 #[ignore]
 fn stream_close_by_recv_reset_frame_releases_capacity() {}
 
-#[tokio::test]
-async fn recv_window_update_on_stream_closed_by_data_frame() {
+#[test]
+fn recv_window_update_on_stream_closed_by_data_frame() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -986,10 +1013,12 @@ async fn recv_window_update_on_stream_closed_by_data_frame() {
         srv.send_frame(frames::window_update(1, 5)).await;
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn small_data_frames_reclaimed_before_buffering_next() {
+#[test]
+fn small_data_frames_reclaimed_before_buffering_next() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1023,10 +1052,12 @@ async fn small_data_frames_reclaimed_before_buffering_next() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn send_enqueued_during_unlocked_flush_wakes_connection() {
+#[test]
+fn send_enqueued_during_unlocked_flush_wakes_connection() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
     let interleave = FlushInterleave::new();
@@ -1067,7 +1098,7 @@ async fn send_enqueued_during_unlocked_flush_wakes_connection() {
             // Suppress unrelated/spurious connection polls so only a wake
             // registered during the critical flush interval can make progress.
             let mut woken_h2 = (&mut h2).wakened();
-            tokio::time::timeout(Duration::from_secs(5), woken_h2.drive(response))
+            timer::timeout(Duration::from_secs(5), woken_h2.drive(response))
                 .await
                 .expect("connection was not woken for DATA queued during flush")
                 .unwrap()
@@ -1092,10 +1123,12 @@ async fn send_enqueued_during_unlocked_flush_wakes_connection() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn reserved_capacity_assigned_in_multi_window_updates() {
+#[test]
+fn reserved_capacity_assigned_in_multi_window_updates() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1155,11 +1188,14 @@ async fn reserved_capacity_assigned_in_multi_window_updates() {
         */
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn connection_notified_on_released_capacity() {
-    use tokio::sync::{mpsc, oneshot};
+#[test]
+fn connection_notified_on_released_capacity() {
+    h2_support::run(async {
+    use futures::channel::oneshot;
+    use smol::channel as mpsc;
 
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1168,14 +1204,14 @@ async fn connection_notified_on_released_capacity() {
     // notifications. This test is here, in part, to ensure that the connection
     // receives the appropriate notifications to send out window updates.
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::unbounded();
 
     // Because threading is fun
     let (settings_tx, settings_rx) = oneshot::channel();
 
     let (th1_tx, th1_rx) = oneshot::channel();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let settings = srv.assert_client_handshake().await;
         assert_default_settings!(settings);
         settings_tx.send(()).unwrap();
@@ -1209,7 +1245,7 @@ async fn connection_notified_on_released_capacity() {
         srv.recv_frame(frames::window_update(0, 16_384)).await;
 
         th1_tx.send(()).unwrap();
-    });
+    }).detach();
 
     let (th2_tx, th2_rx) = oneshot::channel();
 
@@ -1218,19 +1254,21 @@ async fn connection_notified_on_released_capacity() {
     h2.drive(settings_rx).await.unwrap();
     let request = Request::get("https://example.com/a").body(()).unwrap();
     tx.send(client.send_request(request, true).unwrap().0)
+        .await
         .unwrap();
 
     let request = Request::get("https://example.com/b").body(()).unwrap();
     tx.send(client.send_request(request, true).unwrap().0)
+        .await
         .unwrap();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         // Run the connection to completion
         h2.await.unwrap();
 
         th2_tx.send(()).unwrap();
         drop(client);
-    });
+    }).detach();
 
     // Get the two requests
     let a = rx.recv().await.unwrap();
@@ -1266,10 +1304,12 @@ async fn connection_notified_on_released_capacity() {
     // Explicitly drop this after the joins so that the capacity doesn't get
     // implicitly released before.
     drop(b);
+    });
 }
 
-#[tokio::test]
-async fn recv_settings_removes_available_capacity() {
+#[test]
+fn recv_settings_removes_available_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1313,10 +1353,12 @@ async fn recv_settings_removes_available_capacity() {
         h2.await.unwrap();
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_settings_keeps_assigned_capacity() {
+#[test]
+fn recv_settings_keeps_assigned_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1358,10 +1400,12 @@ async fn recv_settings_keeps_assigned_capacity() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_no_init_window_then_receive_some_init_window() {
+#[test]
+fn recv_no_init_window_then_receive_some_init_window() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1411,10 +1455,12 @@ async fn recv_no_init_window_then_receive_some_init_window() {
         h2.await.unwrap();
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn settings_lowered_capacity_returns_capacity_to_connection() {
+#[test]
+fn settings_lowered_capacity_returns_capacity_to_connection() {
+    h2_support::run(async {
     use futures::channel::oneshot;
 
     h2_support::trace_init!();
@@ -1426,7 +1472,7 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
 
     let (th1_tx, th1_rx) = oneshot::channel();
     // Spawn the server on a thread
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let settings = srv.assert_client_handshake().await;
         assert_default_settings!(settings);
         tx1.send(()).unwrap();
@@ -1447,7 +1493,7 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
         //
         // A timeout is used here to avoid blocking forever if there is a
         // failure
-        let _ = tokio::time::timeout(Duration::from_secs(5), rx2)
+        let _ = timer::timeout(Duration::from_secs(5), rx2)
             .await
             .unwrap();
 
@@ -1466,19 +1512,19 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
         srv.send_frame(frames::headers(3).response(204).eos()).await;
         drop(srv);
         th1_tx.send(()).unwrap();
-    });
+    }).detach();
 
     let (mut client, h2) = client::handshake(io).await.unwrap();
 
     let (th2_tx, th2_rx) = oneshot::channel();
     // Drive client connection
-    tokio::spawn(async move {
+    smol::spawn(async move {
         h2.await.unwrap();
         th2_tx.send(()).unwrap();
-    });
+    }).detach();
 
     // Wait for server handshake to complete.
-    let _ = tokio::time::timeout(Duration::from_secs(5), rx1)
+    let _ = timer::timeout(Duration::from_secs(5), rx1)
         .await
         .unwrap();
 
@@ -1518,10 +1564,12 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
 
     th1_rx.await.unwrap();
     th2_rx.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn client_increase_target_window_size() {
+#[test]
+fn client_increase_target_window_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1538,10 +1586,12 @@ async fn client_increase_target_window_size() {
         conn.await.unwrap();
     };
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn increase_target_window_size_after_using_some() {
+#[test]
+fn increase_target_window_size_after_using_some() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1579,10 +1629,12 @@ async fn increase_target_window_size_after_using_some() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn decrease_target_window_size() {
+#[test]
+fn decrease_target_window_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1624,10 +1676,12 @@ async fn decrease_target_window_size() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn client_update_initial_window_size() {
+#[test]
+fn client_update_initial_window_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1699,10 +1753,12 @@ async fn client_update_initial_window_size() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn client_decrease_initial_window_size() {
+#[test]
+fn client_decrease_initial_window_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1824,10 +1880,12 @@ async fn client_decrease_initial_window_size() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn server_target_window_size() {
+#[test]
+fn server_target_window_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -1845,10 +1903,12 @@ async fn server_target_window_size() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_settings_increase_window_size_after_using_some() {
+#[test]
+fn recv_settings_increase_window_size_after_using_some() {
+    h2_support::run(async {
     // See https://github.com/hyperium/h2/issues/208
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1887,10 +1947,12 @@ async fn recv_settings_increase_window_size_after_using_some() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn reserve_capacity_after_peer_closes() {
+#[test]
+fn reserve_capacity_after_peer_closes() {
+    h2_support::run(async {
     // See https://github.com/hyperium/h2/issues/300
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1911,22 +1973,24 @@ async fn reserve_capacity_after_peer_closes() {
             .body(())
             .unwrap();
         let (resp, mut req_body) = client.send_request(request, false).unwrap();
-        conn.drive(async move {
+        let (connection, ()) = futures::future::join(conn, async move {
             let result = resp.await;
             assert!(result.is_err());
         })
         .await;
+        connection.expect("client");
         // As stated in #300, this would panic because the connection
         // had already been closed.
         req_body.reserve_capacity(1);
-        conn.await.expect("client");
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn reset_stream_waiting_for_capacity() {
+#[test]
+fn reset_stream_waiting_for_capacity() {
+    h2_support::run(async {
     // This tests that receiving a reset on a stream that has some available
     // connection-level window reassigns that window to another stream.
     h2_support::trace_init!();
@@ -1986,11 +2050,13 @@ async fn reset_stream_waiting_for_capacity() {
     };
 
     join(srv, client).await;
+    });
 }
 
 // Regression test for https://github.com/hyperium/h2/pull/893
-#[tokio::test]
-async fn reserve_capacity_then_cancel_does_not_leak() {
+#[test]
+fn reserve_capacity_then_cancel_does_not_leak() {
+    h2_support::run(async {
     for explicit_reset in [true, false] {
         let (io, mut srv) = mock::new();
 
@@ -2060,10 +2126,12 @@ async fn reserve_capacity_then_cancel_does_not_leak() {
 
         join(srv, client).await;
     }
+    });
 }
 
-#[tokio::test]
-async fn scheduled_reset_with_buffered_data_sends_rst() {
+#[test]
+fn scheduled_reset_with_buffered_data_sends_rst() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2077,7 +2145,7 @@ async fn scheduled_reset_with_buffered_data_sends_rst() {
             .await;
         srv.send_frame(frames::headers(1).response(200)).await;
 
-        tokio::time::timeout(
+        timer::timeout(
             Duration::from_secs(5),
             srv.recv_frame(frames::reset(1).cancel()),
         )
@@ -2104,10 +2172,12 @@ async fn scheduled_reset_with_buffered_data_sends_rst() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn scheduled_reset_with_excess_buffered_data_is_cleaned_up() {
+#[test]
+fn scheduled_reset_with_excess_buffered_data_is_cleaned_up() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2142,17 +2212,19 @@ async fn scheduled_reset_with_excess_buffered_data_is_cleaned_up() {
         drop(stream);
         drop(resp);
         drop(client);
-        tokio::time::timeout(Duration::from_secs(5), conn)
+        timer::timeout(Duration::from_secs(5), conn)
             .await
             .expect("connection did not shut down within 5s")
             .unwrap();
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn data_padding() {
+#[test]
+fn data_padding() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2199,10 +2271,12 @@ async fn data_padding() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn poll_capacity_after_send_data_and_reserve() {
+#[test]
+fn poll_capacity_after_send_data_and_reserve() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2249,10 +2323,12 @@ async fn poll_capacity_after_send_data_and_reserve() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
+#[test]
+fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2304,10 +2380,12 @@ async fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn max_send_buffer_size_overflow() {
+#[test]
+fn max_send_buffer_size_overflow() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2361,10 +2439,12 @@ async fn max_send_buffer_size_overflow() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn max_send_buffer_size_poll_capacity_wakes_task() {
+#[test]
+fn max_send_buffer_size_poll_capacity_wakes_task() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2408,7 +2488,7 @@ async fn max_send_buffer_size_poll_capacity_wakes_task() {
             "polled capacity not over max buffer size"
         );
 
-        let t1 = tokio::spawn(async move {
+        let t1 = smol::spawn(async move {
             let mut sent = 0;
             let buf = [0; TO_SEND];
             loop {
@@ -2431,14 +2511,16 @@ async fn max_send_buffer_size_poll_capacity_wakes_task() {
 
         // Wait for the connection to close
         conn.await.unwrap();
-        t1.await.unwrap();
+        t1.await;
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn poll_capacity_wakeup_after_window_update() {
+#[test]
+fn poll_capacity_wakeup_after_window_update() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2496,10 +2578,12 @@ async fn poll_capacity_wakeup_after_window_update() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn window_size_does_not_underflow() {
+#[test]
+fn window_size_does_not_underflow() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -2535,10 +2619,12 @@ async fn window_size_does_not_underflow() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn reclaim_reserved_capacity() {
+#[test]
+fn reclaim_reserved_capacity() {
+    h2_support::run(async {
     use futures::channel::oneshot;
 
     h2_support::trace_init!();
@@ -2628,10 +2714,12 @@ async fn reclaim_reserved_capacity() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn capacity_not_assigned_to_unopened_streams() {
+#[test]
+fn capacity_not_assigned_to_unopened_streams() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -2683,10 +2771,12 @@ async fn capacity_not_assigned_to_unopened_streams() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn new_initial_window_size_capacity_not_assigned_to_unopened_streams() {
+#[test]
+fn new_initial_window_size_capacity_not_assigned_to_unopened_streams() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -2742,12 +2832,14 @@ async fn new_initial_window_size_capacity_not_assigned_to_unopened_streams() {
     };
 
     join(mock, h2).await;
+    });
 }
 
 // ==== abusive window updates ====
 
-#[tokio::test]
-async fn too_many_window_update_resets_causes_go_away() {
+#[test]
+fn too_many_window_update_resets_causes_go_away() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -2800,10 +2892,12 @@ async fn too_many_window_update_resets_causes_go_away() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn goaway_ignores_data_but_returns_connection_capacity() {
+#[test]
+fn goaway_ignores_data_but_returns_connection_capacity() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     for padded in [false, true] {
@@ -2910,13 +3004,15 @@ async fn goaway_ignores_data_but_returns_connection_capacity() {
 
         join(client, srv).await;
     }
+    });
 }
 
 /// When the library sends RST_STREAM (e.g., due to a WINDOW_UPDATE
 /// overflow), `poll_capacity` and `poll_reset` must be notified.
 /// Regression test for https://github.com/hyperium/h2/pull/897
-#[tokio::test]
-async fn poll_capacity_woken_on_library_reset() {
+#[test]
+fn poll_capacity_woken_on_library_reset() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     for polling_capacity in [true, false] {
@@ -2960,10 +3056,10 @@ async fn poll_capacity_woken_on_library_reset() {
 
         let client = async move {
             let (mut client, conn) = client::handshake(io).await.unwrap();
-            tokio::spawn(async move {
+            smol::spawn(async move {
                 // Separate task so the polled method won't resolve unless notify_send wakes it.
                 let _ = conn.await;
-            });
+            }).detach();
 
             let request = Request::builder()
                 .method(Method::POST)
@@ -2993,7 +3089,7 @@ async fn poll_capacity_woken_on_library_reset() {
             // 7. The polled method must be woken by the reset from 6.
             if polling_capacity {
                 stream.reserve_capacity(65535);
-                let result = tokio::time::timeout(
+                let result = timer::timeout(
                     Duration::from_secs(1),
                     poll_fn(|cx| stream.poll_capacity(cx)).wakened(),
                 )
@@ -3001,7 +3097,7 @@ async fn poll_capacity_woken_on_library_reset() {
                 .expect("poll_capacity was not woken");
                 assert!(result.is_none());
             } else {
-                let reason = tokio::time::timeout(
+                let reason = timer::timeout(
                     Duration::from_secs(1),
                     poll_fn(|cx| stream.poll_reset(cx)).wakened(),
                 )
@@ -3016,12 +3112,14 @@ async fn poll_capacity_woken_on_library_reset() {
 
         join(srv, client).await;
     }
+    });
 }
 
 /// A WINDOW_UPDATE followed by a SETTINGS decrease can cancel each other out, resulting
 /// in zero capacity. `poll_capacity` must return `Pending` (not `Ready(Ok(0))`) in that case.
-#[tokio::test]
-async fn poll_capacity_window_update_settings_race() {
+#[test]
+fn poll_capacity_window_update_settings_race() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -3071,4 +3169,5 @@ async fn poll_capacity_window_update_settings_race() {
     };
 
     join(srv, h2).await;
+    });
 }

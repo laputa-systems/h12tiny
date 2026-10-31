@@ -5,10 +5,11 @@ use futures::{FutureExt, StreamExt, TryStreamExt};
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
 use std::task::Poll;
-use tokio::sync::oneshot;
+use futures::channel::oneshot;
 
-#[tokio::test]
-async fn send_recv_headers_only() {
+#[test]
+fn send_recv_headers_only() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -38,10 +39,12 @@ async fn send_recv_headers_only() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn send_recv_data() {
+#[test]
+fn send_recv_data() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -100,10 +103,12 @@ async fn send_recv_data() {
 
     // The H2 connection is closed
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn recv_ignores_empty_data_without_end_stream() {
+#[test]
+fn recv_ignores_empty_data_without_end_stream() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -144,10 +149,12 @@ async fn recv_ignores_empty_data_without_end_stream() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn too_many_empty_data_frames_sends_goaway() {
+#[test]
+fn too_many_empty_data_frames_sends_goaway() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -186,10 +193,12 @@ async fn too_many_empty_data_frames_sends_goaway() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn too_many_padded_empty_data_frames_sends_goaway() {
+#[test]
+fn too_many_padded_empty_data_frames_sends_goaway() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -230,10 +239,12 @@ async fn too_many_padded_empty_data_frames_sends_goaway() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn too_many_small_data_frames_sends_goaway() {
+#[test]
+fn too_many_small_data_frames_sends_goaway() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -282,10 +293,12 @@ async fn too_many_small_data_frames_sends_goaway() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn many_small_final_data_frames_do_not_exhaust_budget() {
+#[test]
+fn many_small_final_data_frames_do_not_exhaust_budget() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     const NUM_STREAMS: u32 = 200;
@@ -341,15 +354,17 @@ async fn many_small_final_data_frames_do_not_exhaust_budget() {
             done_tx.send(()).unwrap();
         };
 
-        tokio::spawn(requests);
+        smol::spawn(requests).detach();
         h2.await.unwrap();
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn dropping_buffered_data_frames_releases_budget() {
+#[test]
+fn dropping_buffered_data_frames_releases_budget() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     const NUM_STREAMS: u32 = 200;
@@ -393,22 +408,24 @@ async fn dropping_buffered_data_frames_releases_budget() {
 
                 let mut body = response.into_body();
                 while body.flow_control().used_capacity() < 2 {
-                    tokio::task::yield_now().await;
+                    smol::future::yield_now().await;
                 }
                 drop(body);
             }
             done_tx.send(()).unwrap();
         };
 
-        tokio::spawn(requests);
+        smol::spawn(requests).detach();
         h2.await.unwrap();
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn send_headers_recv_data_single_frame() {
+#[test]
+fn send_headers_recv_data_single_frame() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -454,10 +471,12 @@ async fn send_headers_recv_data_single_frame() {
 
     // The H2 connection is closed
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn closed_streams_are_released() {
+#[test]
+fn closed_streams_are_released() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -497,10 +516,12 @@ async fn closed_streams_are_released() {
         srv.send_frame(frames::headers(1).response(204).eos()).await;
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn reset_streams_dont_grow_memory_continuously() {
+#[test]
+fn reset_streams_dont_grow_memory_continuously() {
+    h2_support::run(async {
     //h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -517,7 +538,7 @@ async fn reset_streams_dont_grow_memory_continuously() {
             client.send_frame(frames::reset(n).protocol_error()).await;
         }
 
-        tokio::time::timeout(
+        timer::timeout(
             std::time::Duration::from_secs(1),
             client.recv_frame(
                 frames::go_away((MAX * 2 + 1) as u32)
@@ -543,10 +564,12 @@ async fn reset_streams_dont_grow_memory_continuously() {
         assert_eq!(21, srv.num_wired_streams());
     };
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn go_away_with_pending_accepting() {
+#[test]
+fn go_away_with_pending_accepting() {
+    h2_support::run(async {
     // h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -590,10 +613,12 @@ async fn go_away_with_pending_accepting() {
         recv_go_away_tx.send(()).unwrap();
     };
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn pending_accept_reset_streams_decrement_too() {
+#[test]
+fn pending_accept_reset_streams_decrement_too() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -615,7 +640,7 @@ async fn pending_accept_reset_streams_decrement_too() {
                 client.send_frame(frames::reset(id).protocol_error()).await;
                 id += 2;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            smol::Timer::after(std::time::Duration::from_millis(50)).await;
         }
     };
 
@@ -631,10 +656,12 @@ async fn pending_accept_reset_streams_decrement_too() {
         poll_fn(|cx| srv.poll_closed(cx)).await.expect("server");
     };
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn errors_if_recv_frame_exceeds_max_frame_size() {
+#[test]
+fn errors_if_recv_frame_exceeds_max_frame_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -680,10 +707,12 @@ async fn errors_if_recv_frame_exceeds_max_frame_size() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn configure_max_frame_size() {
+#[test]
+fn configure_max_frame_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -719,10 +748,12 @@ async fn configure_max_frame_size() {
         srv.send_frame(frames::data(1, vec![0; 16_385]).eos()).await;
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_goaway_finishes_processed_streams() {
+#[test]
+fn recv_goaway_finishes_processed_streams() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -776,10 +807,12 @@ async fn recv_goaway_finishes_processed_streams() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_goaway_with_higher_last_processed_id() {
+#[test]
+fn recv_goaway_with_higher_last_processed_id() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -810,10 +843,12 @@ async fn recv_goaway_with_higher_last_processed_id() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_next_stream_id_updated_by_malformed_headers() {
+#[test]
+fn recv_next_stream_id_updated_by_malformed_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -853,10 +888,12 @@ async fn recv_next_stream_id_updated_by_malformed_headers() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn skipped_stream_ids_are_implicitly_closed() {
+#[test]
+fn skipped_stream_ids_are_implicitly_closed() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -894,10 +931,12 @@ async fn skipped_stream_ids_are_implicitly_closed() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn send_rst_stream_allows_recv_data() {
+#[test]
+fn send_rst_stream_allows_recv_data() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -939,10 +978,12 @@ async fn send_rst_stream_allows_recv_data() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn send_rst_stream_allows_recv_trailers() {
+#[test]
+fn send_rst_stream_allows_recv_trailers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -980,10 +1021,12 @@ async fn send_rst_stream_allows_recv_trailers() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn rst_stream_expires() {
+#[test]
+fn rst_stream_expires() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1031,10 +1074,12 @@ async fn rst_stream_expires() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn rst_stream_max() {
+#[test]
+fn rst_stream_max() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1102,10 +1147,12 @@ async fn rst_stream_max() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn reserved_state_recv_window_update() {
+#[test]
+fn reserved_state_recv_window_update() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1141,6 +1188,7 @@ async fn reserved_state_recv_window_update() {
     };
 
     join(srv, client).await;
+    });
 }
 /*
 #[test]
@@ -1181,14 +1229,18 @@ fn exceed_max_streams() {
 }
 */
 
-#[tokio::test]
-async fn recv_end_stream_survives_reset() {
+#[test]
+fn recv_end_stream_survives_reset() {
+    h2_support::run(async {
     assert_recv_end_stream_survives_reset(Reason::NO_ERROR).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_end_stream_preserves_reset_reason() {
+#[test]
+fn recv_end_stream_preserves_reset_reason() {
+    h2_support::run(async {
     assert_recv_end_stream_survives_reset(Reason::INTERNAL_ERROR).await;
+    });
 }
 
 async fn assert_recv_end_stream_survives_reset(reset_reason: Reason) {
@@ -1231,8 +1283,9 @@ async fn assert_recv_end_stream_survives_reset(reset_reason: Reason) {
     join(srv, client).await;
 }
 
-#[tokio::test]
-async fn recv_end_stream_survives_go_away() {
+#[test]
+fn recv_end_stream_survives_go_away() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1272,10 +1325,12 @@ async fn recv_end_stream_survives_go_away() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_end_stream_survives_eof() {
+#[test]
+fn recv_end_stream_survives_eof() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1309,10 +1364,12 @@ async fn recv_end_stream_survives_eof() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn rst_while_closing() {
+#[test]
+fn rst_while_closing() {
+    h2_support::run(async {
     // Test to reproduce panic in issue #246 --- receipt of a RST_STREAM frame
     // on a stream in the Half Closed (remote) state with a queued EOS causes
     // a panic.
@@ -1369,10 +1426,12 @@ async fn rst_while_closing() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn rst_with_buffered_data() {
+#[test]
+fn rst_with_buffered_data() {
+    h2_support::run(async {
     // Data is buffered in `FramedWrite` and the stream is reset locally before
     // the data is fully flushed. Given that resetting a stream requires
     // clearing all associated state for that stream, this test ensures that the
@@ -1421,10 +1480,12 @@ async fn rst_with_buffered_data() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn err_with_buffered_data() {
+#[test]
+fn err_with_buffered_data() {
+    h2_support::run(async {
     // Data is buffered in `FramedWrite` and the stream is reset locally before
     // the data is fully flushed. Given that resetting a stream requires
     // clearing all associated state for that stream, this test ensures that the
@@ -1476,10 +1537,12 @@ async fn err_with_buffered_data() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn send_err_with_buffered_data() {
+#[test]
+fn send_err_with_buffered_data() {
+    h2_support::run(async {
     // Data is buffered in `FramedWrite` and the stream is reset locally before
     // the data is fully flushed. Given that resetting a stream requires
     // clearing all associated state for that stream, this test ensures that the
@@ -1541,10 +1604,12 @@ async fn send_err_with_buffered_data() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn srv_window_update_on_lower_stream_id() {
+#[test]
+fn srv_window_update_on_lower_stream_id() {
+    h2_support::run(async {
     // See https://github.com/hyperium/h2/issues/208
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1595,11 +1660,13 @@ async fn srv_window_update_on_lower_stream_id() {
         drop(client);
     };
     join(srv, client).await;
+    });
 }
 
 // See https://github.com/hyperium/h2/issues/570
-#[tokio::test]
-async fn reset_new_stream_before_send() {
+#[test]
+fn reset_new_stream_before_send() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1652,10 +1719,12 @@ async fn reset_new_stream_before_send() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn explicit_reset_with_max_concurrent_stream() {
+#[test]
+fn explicit_reset_with_max_concurrent_stream() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -1720,10 +1789,12 @@ async fn explicit_reset_with_max_concurrent_stream() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn implicit_cancel_with_max_concurrent_stream() {
+#[test]
+fn implicit_cancel_with_max_concurrent_stream() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -1789,4 +1860,5 @@ async fn implicit_cancel_with_max_concurrent_stream() {
     };
 
     join(mock, h2).await;
+    });
 }
