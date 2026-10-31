@@ -4,8 +4,9 @@ use h2_support::prelude::*;
 use h2_support::DEFAULT_WINDOW_SIZE;
 use std::task::Context;
 
-#[tokio::test]
-async fn single_stream_send_large_body() {
+#[test]
+fn single_stream_send_large_body() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0; 1024];
@@ -64,10 +65,12 @@ async fn single_stream_send_large_body() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn multiple_streams_with_payload_greater_than_default_window() {
+#[test]
+fn multiple_streams_with_payload_greater_than_default_window() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0; 16384 * 5 - 1];
@@ -129,10 +132,12 @@ async fn multiple_streams_with_payload_greater_than_default_window() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
+#[test]
+fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0; 32_768];
@@ -195,10 +200,12 @@ async fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn single_stream_send_body_greater_than_default_window() {
+#[test]
+fn single_stream_send_body_greater_than_default_window() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0; 16384 * 5 - 1];
@@ -281,10 +288,12 @@ async fn single_stream_send_body_greater_than_default_window() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn single_stream_send_extra_large_body_multi_frames_multi_buffer() {
+#[test]
+fn single_stream_send_extra_large_body_multi_frames_multi_buffer() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let payload = vec![0; 32_768];
@@ -345,10 +354,12 @@ async fn single_stream_send_extra_large_body_multi_frames_multi_buffer() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn send_data_receive_window_update() {
+#[test]
+fn send_data_receive_window_update() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (m, mut mock) = mock::new();
 
@@ -415,11 +426,13 @@ async fn send_data_receive_window_update() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
-    use tokio::sync::oneshot;
+#[test]
+fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
+    h2_support::run(async {
+    use futures::channel::oneshot;
 
     h2_support::trace_init!();
 
@@ -503,8 +516,12 @@ async fn stream_count_over_max_stream_limit_does_not_starve_capacity() {
     let task = join(srv, client);
     pin_mut!(task);
 
-    let t = tokio::time::sleep(Duration::from_secs(5)).map(|_| panic!("time out"));
+    let t = async {
+        smol::Timer::after(Duration::from_secs(5)).await;
+        panic!("time out");
+    };
     pin_mut!(t);
 
     select(task, t).await;
+    });
 }

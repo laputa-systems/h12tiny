@@ -1,15 +1,12 @@
-use futures::{FutureExt, StreamExt, TryFutureExt};
+use futures::StreamExt;
 use h2_support::prelude::*;
 
-use std::io;
-use std::{
-    net::SocketAddr,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+use std::net::SocketAddr;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
 };
-use tokio::net::{TcpListener, TcpStream};
+use std::thread;
 
 struct Server {
     addr: SocketAddr,
@@ -24,35 +21,32 @@ impl Server {
         F: Send + Sync + 'static,
     {
         let mk_data = Arc::new(mk_data);
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let listener = rt
-            .block_on(TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))))
-            .unwrap();
+        let listener =
+            smol::block_on(smol::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))))
+                .unwrap();
         let addr = listener.local_addr().unwrap();
         let reqs = Arc::new(AtomicUsize::new(0));
         let reqs2 = reqs.clone();
         let join = thread::spawn(move || {
-            let server = async move {
+            smol::block_on(async move {
                 loop {
                     let socket = listener.accept().await.map(|(s, _)| s);
                     let reqs = reqs2.clone();
                     let mk_data = mk_data.clone();
-                    tokio::spawn(async move {
+                    smol::spawn(async move {
                         if let Err(e) = handle_request(socket, reqs, mk_data).await {
                             eprintln!("serve conn error: {:?}", e)
                         }
-                    });
+                    })
+                    .detach();
                 }
-            };
-
-            rt.block_on(server);
+            });
         });
 
         Self {
             addr,
-            _join: Some(join),
             reqs,
+            _join: Some(join),
         }
     }
 
@@ -66,7 +60,7 @@ impl Server {
 }
 
 async fn handle_request<F>(
-    socket: io::Result<TcpStream>,
+    socket: std::io::Result<smol::net::TcpStream>,
     reqs: Arc<AtomicUsize>,
     mk_data: Arc<F>,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -74,7 +68,9 @@ where
     F: Fn() -> Bytes,
     F: Send + Sync + 'static,
 {
-    let mut conn = server::handshake(socket?).await?;
+    let socket = socket?;
+    socket.set_nodelay(true)?;
+    let mut conn = server::handshake(socket).await?;
     while let Some(result) = conn.next().await {
         let (_, mut respond) = result?;
         reqs.fetch_add(1, Ordering::Release);
@@ -95,56 +91,35 @@ fn hammer_client_concurrency() {
     let addr = server.addr();
     let rsps = Arc::new(AtomicUsize::new(0));
 
-    for i in 0..N {
-        print!("sending {}", i);
+    for _ in 0..N {
         let rsps = rsps.clone();
-        let tcp = TcpStream::connect(&addr);
-        let tcp = tcp
-            .then(|res| {
-                let tcp = res.unwrap();
-                client::handshake(tcp)
+        smol::block_on(async move {
+            let tcp = smol::net::TcpStream::connect(addr).await.unwrap();
+            tcp.set_nodelay(true).unwrap();
+            let (mut client, h2) = client::handshake(tcp).await.unwrap();
+            let request = Request::builder()
+                .uri("https://http2.akamai.com/")
+                .body(())
+                .unwrap();
+
+            let (response, mut stream) = client.send_request(request, false).unwrap();
+            stream.send_trailers(HeaderMap::new()).unwrap();
+            drop(client);
+
+            smol::spawn(async move {
+                let _ = h2.await;
             })
-            .then(move |res| {
-                let rsps = rsps;
-                let (mut client, h2) = res.unwrap();
-                let request = Request::builder()
-                    .uri("https://http2.akamai.com/")
-                    .body(())
-                    .unwrap();
+            .detach();
 
-                let (response, mut stream) = client.send_request(request, false).unwrap();
-                stream.send_trailers(HeaderMap::new()).unwrap();
-
-                tokio::spawn(async move {
-                    h2.await.unwrap();
-                });
-
-                response
-                    .and_then(|response| {
-                        let mut body = response.into_body();
-
-                        async move {
-                            while let Some(res) = body.data().await {
-                                res?;
-                            }
-                            body.trailers().await?;
-                            Ok(())
-                        }
-                    })
-                    .map_err(|e| {
-                        panic!("client error: {:?}", e);
-                    })
-                    .map(move |_| {
-                        rsps.fetch_add(1, Ordering::Release);
-                    })
-            });
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(tcp);
-        println!("...done");
+            let response = response.await.unwrap();
+            let mut body = response.into_body();
+            while let Some(res) = body.data().await {
+                res.unwrap();
+            }
+            body.trailers().await.unwrap();
+            rsps.fetch_add(1, Ordering::Release);
+        });
     }
-
-    println!("all done");
 
     assert_eq!(N, rsps.load(Ordering::Acquire));
     assert_eq!(N, server.request_count());

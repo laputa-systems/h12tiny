@@ -18,12 +18,12 @@ flow-control exchange) are separate rows and do not inflate inherited counts.
 | h2 | h2-tests stream_states | `tests/h2-tests/tests/stream_states.rs` | 36 | 36 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test stream_states` | - |
 | h2 | h2-tests server | `tests/h2-tests/tests/server.rs` | 46 | 46 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test server` | - |
 | h2 | h2-tests client_request | `tests/h2-tests/tests/client_request.rs` | 47 | 47 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test client_request` | - |
-| h2 | h2-tests codec_read | `tests/h2-tests/tests/codec_read.rs` | 15 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test codec_read` | - |
-| h2 | h2-tests informational_responses | `tests/h2-tests/tests/informational_responses.rs` | 7 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test informational_responses` | - |
-| h2 | h2-tests prioritization | `tests/h2-tests/tests/prioritization.rs` | 7 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test prioritization` | - |
-| h2 | h2-tests push_promise | `tests/h2-tests/tests/push_promise.rs` | 13 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test push_promise` | - |
-| h2 | h2-tests trailers | `tests/h2-tests/tests/trailers.rs` | 5 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test trailers` | - |
-| h2 | h2-tests hammer | `tests/h2-tests/tests/hammer.rs` | 1 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test hammer` | - |
+| h2 | h2-tests codec_read | `tests/h2-tests/tests/codec_read.rs` | 15 | 15 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test codec_read` | self |
+| h2 | h2-tests informational_responses | `tests/h2-tests/tests/informational_responses.rs` | 7 | 7 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test informational_responses` | self |
+| h2 | h2-tests prioritization | `tests/h2-tests/tests/prioritization.rs` | 7 | 7 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test prioritization` | self |
+| h2 | h2-tests push_promise | `tests/h2-tests/tests/push_promise.rs` | 13 | 13 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test push_promise` | self |
+| h2 | h2-tests trailers | `tests/h2-tests/tests/trailers.rs` | 5 | 5 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test trailers` | self |
+| h2 | h2-tests hammer | `tests/h2-tests/tests/hammer.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test hammer` | self |
 | hyper | library | `src/**/*.rs` | 130 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --lib` | - |
 | hyper | h1_flush_before_yield | `tests/h1_flush_before_yield.rs` | 1 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test h1_flush_before_yield` | - |
 | hyper | h1_shutdown_while_buffered | `tests/h1_shutdown_while_buffered.rs` | 1 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test h1_shutdown_while_buffered` | - |

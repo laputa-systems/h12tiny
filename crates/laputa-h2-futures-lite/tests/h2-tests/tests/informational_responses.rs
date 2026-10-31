@@ -4,8 +4,9 @@ use futures::{future::poll_fn, StreamExt};
 use h2_support::prelude::*;
 use http::{Response, StatusCode};
 
-#[tokio::test]
-async fn send_100_continue() {
+#[test]
+fn send_100_continue() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -55,10 +56,12 @@ async fn send_100_continue() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn send_103_early_hints() {
+#[test]
+fn send_103_early_hints() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -114,10 +117,12 @@ async fn send_103_early_hints() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn send_multiple_informational_responses() {
+#[test]
+fn send_multiple_informational_responses() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -182,10 +187,12 @@ async fn send_multiple_informational_responses() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn invalid_informational_status_returns_error() {
+#[test]
+fn invalid_informational_status_returns_error() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -231,14 +238,16 @@ async fn invalid_informational_status_returns_error() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn client_poll_informational_responses_none() {
+#[test]
+fn client_poll_informational_responses_none() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
-    let (sync_sender, sync_receiver) = tokio::sync::oneshot::channel::<()>();
+    let (sync_sender, sync_receiver) = futures::channel::oneshot::channel::<()>();
 
     let srv = async move {
         let recv_settings = srv.assert_client_handshake().await;
@@ -258,7 +267,7 @@ async fn client_poll_informational_responses_none() {
         // The server may not close the stream immediately.
         // Let's simulate this by waiting from client.
         // Continue after the client received the response headers
-        tokio::time::timeout(Duration::from_secs(4), sync_receiver)
+        timer::timeout(Duration::from_secs(4), sync_receiver)
             .await
             .expect("Client blocked on informational headers")
             .unwrap();
@@ -281,9 +290,9 @@ async fn client_poll_informational_responses_none() {
             .send_request(request, true)
             .unwrap();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             connection.await.expect("connection error");
-        });
+        }).detach();
 
         // Poll for informational responses
         loop {
@@ -305,10 +314,12 @@ async fn client_poll_informational_responses_none() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn client_poll_informational_responses() {
+#[test]
+fn client_poll_informational_responses() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -382,10 +393,12 @@ async fn client_poll_informational_responses() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn informational_responses_with_body_streaming() {
+#[test]
+fn informational_responses_with_body_streaming() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -458,4 +471,5 @@ async fn informational_responses_with_body_streaming() {
     };
 
     join(client, srv).await;
+    });
 }

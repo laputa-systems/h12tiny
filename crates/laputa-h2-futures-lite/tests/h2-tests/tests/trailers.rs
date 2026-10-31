@@ -1,10 +1,11 @@
 use futures::StreamExt;
 use h2_support::prelude::*;
 use std::task::Poll;
-use tokio::sync::oneshot;
+use futures::channel::oneshot;
 
-#[tokio::test]
-async fn recv_trailers_only() {
+#[test]
+fn recv_trailers_only() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -51,10 +52,12 @@ async fn recv_trailers_only() {
     assert_eq!(trailers["status"], "ok");
 
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn send_trailers_immediately() {
+#[test]
+fn send_trailers_immediately() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -104,6 +107,7 @@ async fn send_trailers_immediately() {
     assert!(trailers.is_none());
 
     h2.await.unwrap();
+    });
 }
 
 #[test]
@@ -112,8 +116,9 @@ fn recv_trailers_without_eos() {
     // This should be a protocol error?
 }
 
-#[tokio::test]
-async fn poll_trailers_before_data_is_consumed() {
+#[test]
+fn poll_trailers_before_data_is_consumed() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
     let (frames_ready_tx, frames_ready_rx) = oneshot::channel();
@@ -143,7 +148,7 @@ async fn poll_trailers_before_data_is_consumed() {
 
     let client = async move {
         let (mut client, conn) = client::handshake(io).await.expect("handshake");
-        let conn = tokio::spawn(async move {
+        let conn = smol::spawn(async move {
             conn.await.expect("client");
         });
 
@@ -155,7 +160,7 @@ async fn poll_trailers_before_data_is_consumed() {
         frames_ready_rx.await.unwrap();
         let mut first_poll = true;
 
-        let trailers = tokio::time::timeout(
+        let trailers = timer::timeout(
             Duration::from_secs(1),
             poll_fn(|cx| {
                 if first_poll {
@@ -191,14 +196,16 @@ async fn poll_trailers_before_data_is_consumed() {
 
         assert_eq!(trailers["trailer-key"], "trailer-val");
 
-        conn.await.unwrap();
+        conn.await;
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn send_trailers_rejects_connection_specific_headers() {
+#[test]
+fn send_trailers_rejects_connection_specific_headers() {
+    h2_support::run(async {
     // RFC 9113 §8.2.2: endpoints MUST NOT *generate* an HTTP/2 message containing
     // connection-specific header fields. That obligation applies to trailer HEADERS
     // blocks just as it does to the main header block. `send_headers` already rejects
@@ -261,4 +268,5 @@ async fn send_trailers_rejects_connection_specific_headers() {
     };
 
     join(srv, client).await;
+    });
 }

@@ -1,10 +1,12 @@
 use h2_support::prelude::*;
 
-#[tokio::test]
-async fn read_none() {
+#[test]
+fn read_none() {
+    h2_support::run(async {
     let mut codec = Codec::from(mock_io::Builder::new().build());
 
     assert_closed!(codec);
+    });
 }
 
 #[test]
@@ -13,8 +15,9 @@ fn read_frame_too_big() {}
 
 // ===== DATA =====
 
-#[tokio::test]
-async fn read_data_no_padding() {
+#[test]
+fn read_data_no_padding() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             0, 0, 5, 0, 0, 0, 0, 0, 1,
@@ -28,10 +31,12 @@ async fn read_data_no_padding() {
     assert!(!data.is_end_stream());
 
     assert_closed!(codec);
+    });
 }
 
-#[tokio::test]
-async fn read_data_empty_payload() {
+#[test]
+fn read_data_empty_payload() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             0, 0, 0, 0, 0, 0, 0, 0, 1,
@@ -44,10 +49,12 @@ async fn read_data_empty_payload() {
     assert!(!data.is_end_stream());
 
     assert_closed!(codec);
+    });
 }
 
-#[tokio::test]
-async fn read_data_end_stream() {
+#[test]
+fn read_data_end_stream() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             0, 0, 5, 0, 1, 0, 0, 0, 1,
@@ -60,10 +67,12 @@ async fn read_data_end_stream() {
     assert_eq!(data.payload(), &b"hello"[..]);
     assert!(data.is_end_stream());
     assert_closed!(codec);
+    });
 }
 
-#[tokio::test]
-async fn read_data_padding() {
+#[test]
+fn read_data_padding() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             0, 0, 16, 0, 0x8, 0, 0, 0, 1,
@@ -79,10 +88,12 @@ async fn read_data_padding() {
     assert!(!data.is_end_stream());
 
     assert_closed!(codec);
+    });
 }
 
-#[tokio::test]
-async fn read_push_promise() {
+#[test]
+fn read_push_promise() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             0, 0, 0x5,
@@ -99,10 +110,12 @@ async fn read_push_promise() {
     assert_eq!(pp.into_parts().0.method, Some(Method::GET));
 
     assert_closed!(codec);
+    });
 }
 
-#[tokio::test]
-async fn read_data_stream_id_zero() {
+#[test]
+fn read_data_stream_id_zero() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             0, 0, 5, 0, 0, 0, 0, 0, 0,
@@ -111,6 +124,7 @@ async fn read_data_stream_id_zero() {
     };
 
     poll_err!(codec);
+    });
 }
 
 // ===== HEADERS =====
@@ -127,8 +141,9 @@ fn read_headers_with_pseudo() {}
 #[ignore]
 fn read_headers_empty_payload() {}
 
-#[tokio::test]
-async fn read_continuation_frames() {
+#[test]
+fn read_continuation_frames() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -184,12 +199,14 @@ async fn read_continuation_frames() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn update_max_frame_len_at_rest() {
+#[test]
+fn update_max_frame_len_at_rest() {
+    h2_support::run(async {
     use futures::StreamExt;
-    use tokio::io::AsyncReadExt;
+    use smol::io::AsyncReadExt;
 
     h2_support::trace_init!();
     // TODO: add test for updating max frame length in flight as well?
@@ -215,10 +232,12 @@ async fn update_max_frame_len_at_rest() {
     // drain codec buffer
     let mut buf = Vec::new();
     codec.get_mut().read_to_end(&mut buf).await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn read_goaway_with_debug_data() {
+#[test]
+fn read_goaway_with_debug_data() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             // head
@@ -238,10 +257,12 @@ async fn read_goaway_with_debug_data() {
     assert_eq!(&**data.debug_data(), b"too_many_pings");
 
     assert_closed!(codec);
+    });
 }
 
-#[tokio::test]
-async fn read_goaway_stream_id_not_zero() {
+#[test]
+fn read_goaway_stream_id_not_zero() {
+    h2_support::run(async {
     let mut codec = raw_codec! {
         read => [
             // head, stream id 1
@@ -254,4 +275,5 @@ async fn read_goaway_stream_id_not_zero() {
     };
 
     poll_err!(codec);
+    });
 }

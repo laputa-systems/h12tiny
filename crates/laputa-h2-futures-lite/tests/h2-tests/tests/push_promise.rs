@@ -1,8 +1,9 @@
 use futures::{StreamExt, TryStreamExt};
 use h2_support::prelude::*;
 
-#[tokio::test]
-async fn refused_push_promises_count_toward_local_reset_limit() {
+#[test]
+fn refused_push_promises_count_toward_local_reset_limit() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     for limit in [0, 2] {
@@ -48,10 +49,12 @@ async fn refused_push_promises_count_toward_local_reset_limit() {
 
         join(mock, client).await;
     }
+    });
 }
 
-#[tokio::test]
-async fn recv_push_over_concurrency_limit_refuses_promised_streams() {
+#[test]
+fn recv_push_over_concurrency_limit_refuses_promised_streams() {
+    h2_support::run(async {
     let (io, mut srv) = mock::new();
     let peer = async move {
         srv.assert_client_handshake().await;
@@ -85,10 +88,12 @@ async fn recv_push_over_concurrency_limit_refuses_promised_streams() {
         assert_eq!(response.status(), StatusCode::OK);
     };
     join(peer, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_push_works() {
+#[test]
+fn recv_push_works() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -142,10 +147,12 @@ async fn recv_push_works() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn multiple_informational_responses_on_pushed_stream() {
+#[test]
+fn multiple_informational_responses_on_pushed_stream() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -190,10 +197,12 @@ async fn multiple_informational_responses_on_pushed_stream() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn pushed_streams_arent_dropped_too_early() {
+#[test]
+fn pushed_streams_arent_dropped_too_early() {
+    h2_support::run(async {
     // tests that by default, received push promises work
     h2_support::trace_init!();
 
@@ -257,10 +266,12 @@ async fn pushed_streams_arent_dropped_too_early() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_push_when_push_disabled_is_conn_error() {
+#[test]
+fn recv_push_when_push_disabled_is_conn_error() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -315,10 +326,12 @@ async fn recv_push_when_push_disabled_is_conn_error() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn pending_push_promises_reset_when_dropped() {
+#[test]
+fn pending_push_promises_reset_when_dropped() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -362,10 +375,12 @@ async fn pending_push_promises_reset_when_dropped() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn reserved_push_promises_respect_max_concurrent_streams() {
+#[test]
+fn reserved_push_promises_respect_max_concurrent_streams() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -421,10 +436,12 @@ async fn reserved_push_promises_respect_max_concurrent_streams() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_push_promise_over_max_header_list_size() {
+#[test]
+fn recv_push_promise_over_max_header_list_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -471,10 +488,12 @@ async fn recv_push_promise_over_max_header_list_size() {
         conn.await.expect("client");
     };
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
+#[test]
+fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
+    h2_support::run(async {
     // Unsafe method or content length is stream protocol error
     h2_support::trace_init!();
 
@@ -540,6 +559,7 @@ async fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
     };
 
     join(mock, h2).await;
+    });
 }
 
 #[test]
@@ -548,8 +568,9 @@ fn recv_push_promise_with_wrong_authority_is_stream_error() {
     // if server is foo.com, :authority = bar.com is stream error
 }
 
-#[tokio::test]
-async fn recv_push_promise_skipped_stream_id() {
+#[test]
+fn recv_push_promise_skipped_stream_id() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -608,10 +629,12 @@ async fn recv_push_promise_skipped_stream_id() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_push_promise_dup_stream_id() {
+#[test]
+fn recv_push_promise_dup_stream_id() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -666,4 +689,5 @@ async fn recv_push_promise_dup_stream_id() {
     };
 
     join(mock, h2).await;
+    });
 }
