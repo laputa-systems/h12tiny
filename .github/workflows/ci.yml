@@ -53,6 +53,34 @@ jobs:
       - run: sh scripts/check-normal-dependencies.sh --features full
       - run: sh scripts/check-smolith-pin.sh
 
+  protocol-forks:
+    name: Protocol forks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: h12tiny
+      # rust-toolchain.toml pins the toolchain; this installs it.
+      - run: rustup show active-toolchain
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: h12tiny
+      - name: Full fork gate
+        if: runner.os == 'Linux'
+        run: sh scripts/verify-protocols.sh
+      - name: Fork smoke
+        if: runner.os == 'macOS'
+        run: |
+          cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --lib
+          cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --test flow_control_futures
+          cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full
+          cargo test --manifest-path crates/laputa-fastwebsockets-futures-lite/Cargo.toml --locked --all-features
+
   msrv:
     name: Minimum supported Rust versions
     runs-on: ubuntu-latest

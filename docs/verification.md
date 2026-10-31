@@ -22,6 +22,11 @@ workspace checks below are the broader integration gates.
 - H2 flow control: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --test flow_control_futures`.
 - Hyper: `cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full`.
 - fastwebsockets: run `cargo test --all-features` from `crates/laputa-fastwebsockets-futures-lite`.
+- Fork protocol gate: `sh scripts/verify-protocols.sh` runs every fork suite and
+  the shared test support crate. Pass `--suite NAME` to run one suite and
+  `--check-ledger` to validate `docs/fork-test-parity.md`. CI runs the full gate
+  on Linux; the individual commands above are for iterating on one fork, not a
+  substitute for the gate.
 
 The integration tests cover adversarial H1 framing, H2 lifecycle and
 cancellation, cleartext and TLS protocol selection, system-trust defaults and
@@ -41,11 +46,15 @@ The smolith repository separately tests an h12tiny checkout, with
 runtime dependencies redirected to local smolith crates, using its `h12tiny.sh`
 fixture script.
 
-The inherited Hyper and H2 Tokio integration harnesses require adaptation
-before they can exercise the futures-I/O forks. The focused H2 flow-control
-test uses a futures-I/O transport and checks both `WINDOW_UPDATE` frames after
-capacity release, then reads the next data frame. The H2 unit-test command
-runs library tests, not the inherited integration crate.
+The fork protocol gate runs in CI as the `protocol-forks` job, not manually.
+`scripts/verify-protocols.sh` covers the H2 library, the H2 inherited
+integration crate, the wake-driven H2 flow-control regression, the shared
+futures-I/O test support crate, Hyper check and its inherited tests, and
+fastwebsockets. The gate prints a count per suite and fails when a suite runs
+zero tests or reports a failure. `docs/fork-test-parity.md` records the
+classification of every inherited fork test. The focused H2 flow-control test
+uses a futures-I/O transport and a wake-driven executor, then checks both
+`WINDOW_UPDATE` frames after capacity release and reads the next data frame.
 
 The pinned nightly is the development toolchain; see the
 [current compiler requirements](../README.md#add-it) for consumers.
