@@ -495,8 +495,9 @@ mod tests {
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn drop_receiver_sends_cancel_errors() {
+    #[test]
+    fn drop_receiver_sends_cancel_errors() {
+        crate::test_support::block_on(async {
         let _ = pretty_env_logger::try_init();
 
         let (mut tx, mut rx) = channel::<Custom, ()>();
@@ -515,26 +516,29 @@ mod tests {
             (true, Some(_)) => (),
             e => panic!("expected Error::Cancel(_), found {:?}", e),
         }
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn sender_checks_for_want_on_send() {
+    #[test]
+    fn sender_checks_for_want_on_send() {
+        crate::test_support::block_on(async {
         let (mut tx, mut rx) = channel::<Custom, ()>();
 
         // one is allowed to buffer, second is rejected
         tx.try_send(Custom(1)).expect("1 buffered");
-        tx.try_send(Custom(2)).expect_err("2 not ready");
+        assert!(tx.try_send(Custom(2)).is_err(), "2 not ready");
 
         assert!(PollOnce(&mut rx).await.is_some(), "rx once");
 
         // Even though 1 has been popped, only 1 could be buffered for the
         // lifetime of the channel.
-        tx.try_send(Custom(2)).expect_err("2 still not ready");
+        assert!(tx.try_send(Custom(2)).is_err(), "2 still not ready");
 
         assert!(PollOnce(&mut rx).await.is_none(), "rx empty");
 
         tx.try_send(Custom(2)).expect("2 ready");
+        });
     }
 
     #[cfg(feature = "http2")]
@@ -549,7 +553,7 @@ mod tests {
 
         drop(rx);
 
-        tx.try_send(Custom(4)).unwrap_err();
+        assert!(tx.try_send(Custom(4)).is_err());
     }
 
     #[cfg(feature = "nightly")]

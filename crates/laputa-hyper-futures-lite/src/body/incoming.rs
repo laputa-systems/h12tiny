@@ -412,20 +412,23 @@ mod tests {
 
     #[cfg(all(feature = "http1", any(feature = "client", feature = "server")))]
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn channel_abort() {
+    #[test]
+    fn channel_abort() {
+        crate::test_support::block_on(async {
         let (tx, mut rx) = Incoming::channel();
 
         tx.abort();
 
         let err = rx.frame().await.unwrap().unwrap_err();
         assert!(err.is_body_write_aborted(), "{:?}", err);
+        });
     }
 
     #[cfg(all(feature = "http1", any(feature = "client", feature = "server")))]
     #[cfg(all(not(miri), feature = "http1"))]
-    #[tokio::test]
-    async fn channel_abort_when_buffer_is_full() {
+    #[test]
+    fn channel_abort_when_buffer_is_full() {
+        crate::test_support::block_on(async {
         let (mut tx, mut rx) = Incoming::channel();
 
         tx.try_send_data("chunk 1".into()).expect("send 1");
@@ -443,6 +446,7 @@ mod tests {
 
         let err = rx.frame().await.unwrap().unwrap_err();
         assert!(err.is_body_write_aborted(), "{:?}", err);
+        });
     }
 
     #[cfg(feature = "http1")]
@@ -459,11 +463,13 @@ mod tests {
 
     #[cfg(all(feature = "http1", any(feature = "client", feature = "server")))]
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn channel_empty() {
+    #[test]
+    fn channel_empty() {
+        crate::test_support::block_on(async {
         let (_, mut rx) = Incoming::channel();
 
         assert!(rx.frame().await.is_none());
+        });
     }
 
     #[cfg(all(feature = "http1", any(feature = "client", feature = "server")))]
@@ -471,7 +477,7 @@ mod tests {
     fn channel_ready() {
         let (mut tx, _rx) = Incoming::new_channel(DecodedLength::CHUNKED, /*wanter = */ false);
 
-        let mut tx_ready = tokio_test::task::spawn(tx.ready());
+        let mut tx_ready = crate::test_support::task::spawn(tx.ready());
 
         assert!(tx_ready.poll().is_ready(), "tx is ready immediately");
     }
@@ -482,8 +488,8 @@ mod tests {
         let (mut tx, mut rx) =
             Incoming::new_channel(DecodedLength::CHUNKED, /*wanter = */ true);
 
-        let mut tx_ready = tokio_test::task::spawn(tx.ready());
-        let mut rx_data = tokio_test::task::spawn(rx.frame());
+        let mut tx_ready = crate::test_support::task::spawn(tx.ready());
+        let mut rx_data = crate::test_support::task::spawn(rx.frame());
 
         assert!(
             tx_ready.poll().is_pending(),
@@ -504,7 +510,7 @@ mod tests {
     fn channel_notices_closure() {
         let (mut tx, rx) = Incoming::new_channel(DecodedLength::CHUNKED, /*wanter = */ true);
 
-        let mut tx_ready = tokio_test::task::spawn(tx.ready());
+        let mut tx_ready = crate::test_support::task::spawn(tx.ready());
 
         assert!(
             tx_ready.poll().is_pending(),

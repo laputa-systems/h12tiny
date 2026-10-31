@@ -1192,7 +1192,7 @@ mod tests {
         b.bytes = len as u64;
 
         // an empty IO, we'll be skipping and using the read buffer anyways
-        let io = Compat(tokio_test::io::Builder::new().build());
+        let io = crate::test_support::mock_io::Builder::new().build();
         let mut conn = Conn::<_, bytes::Bytes, crate::proto::h1::ServerTransaction>::new(io);
         *conn.io.read_buf_mut() = ::bytes::BytesMut::from(&s[..]);
         conn.state.cached_headers = Some(HeaderMap::with_capacity(2));
@@ -1239,8 +1239,8 @@ mod tests {
         // `append` each) on a fresh client Conn and returns whether the
         // connection remains reusable.
         fn remains_reusable_after_get(connection_values: &[&'static str]) -> bool {
-            let io = Compat(tokio_test::io::Builder::new().build());
-            let mut conn = Conn::<_, bytes::Bytes, crate::proto::h1::ClientTransaction>::new(io);
+            let io = crate::test_support::mock_io::Builder::new().build();
+            let mut conn = Conn::<_, bytes::Bytes, crate::proto::h1::ClientTransaction>::new(crate::test_support::FuturesIo::new(io));
             assert!(
                 conn.state.wants_keep_alive(),
                 "a fresh client connection should want keep-alive"
@@ -1295,13 +1295,13 @@ mod tests {
     use bytes::Bytes;
 
     fn poll_head<I, T>(
-        conn: &mut Conn<Compat<I>, Bytes, T>,
+        conn: &mut Conn<I, Bytes, T>,
     ) -> Poll<Option<crate::Result<(MessageHead<T::Incoming>, DecodedLength, Wants)>>>
     where
-        I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        I: crate::rt::Read + crate::rt::Write + Unpin,
         T: Http1Transaction + Unpin,
     {
-        tokio_test::task::spawn(()).enter(|cx, _| conn.poll_read_head(cx))
+        crate::test_support::task::spawn(std::future::ready(())).enter(|cx, _| conn.poll_read_head(cx))
     }
 
     fn ready<T>(poll: Poll<T>) -> T {
@@ -1314,10 +1314,10 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn conn_reads_request_head() {
-        let io = tokio_test::io::Builder::new()
+        let io = crate::test_support::mock_io::Builder::new()
             .read(b"GET / HTTP/1.1\r\n\r\n")
             .build();
-        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
 
         let (head, body, _) = ready(poll_head(&mut conn))
             .expect("message")
@@ -1329,9 +1329,9 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn conn_reads_partial_request_head() {
-        tokio_test::task::spawn(()).enter(|cx, _| {
-            let (io, mut handle) = tokio_test::io::Builder::new().build_with_handle();
-            let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        crate::test_support::task::spawn(std::future::ready(())).enter(|cx, _| {
+            let (io, mut handle) = crate::test_support::mock_io::Builder::new().build_with_handle();
+            let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
             handle.read(b"GET / HTTP");
             assert!(conn.poll_read_head(cx).is_pending());
             handle.read(b"/1.1\r\nHost: foo.bar\r\n\r\n");
@@ -1342,8 +1342,8 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn conn_accepts_eof_when_idle() {
-        let io = tokio_test::io::Builder::new().build();
-        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let io = crate::test_support::mock_io::Builder::new().build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
         conn.state.idle::<ServerTransaction>();
         assert!(matches!(poll_head(&mut conn), Poll::Ready(None)));
     }
@@ -1351,10 +1351,10 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn conn_rejects_eof_during_partial_head() {
-        let io = tokio_test::io::Builder::new()
+        let io = crate::test_support::mock_io::Builder::new()
             .read(b"GET / HTTP/1.1")
             .build();
-        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
         conn.state.idle::<ServerTransaction>();
         let err = ready(poll_head(&mut conn))
             .expect("error result")
@@ -1365,8 +1365,8 @@ mod tests {
     #[cfg(feature = "client")]
     #[test]
     fn client_rejects_eof_while_busy() {
-        let io = tokio_test::io::Builder::new().build();
-        let mut client = Conn::<_, Bytes, ClientTransaction>::new(Compat::new(io));
+        let io = crate::test_support::mock_io::Builder::new().build();
+        let mut client = Conn::<_, Bytes, ClientTransaction>::new(crate::test_support::FuturesIo::new(io));
         client.state.busy();
         client.state.writing = Writing::KeepAlive;
         let err = ready(poll_head(&mut client))
@@ -1378,8 +1378,8 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn server_accepts_eof_while_busy() {
-        let io = tokio_test::io::Builder::new().build();
-        let mut server = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let io = crate::test_support::mock_io::Builder::new().build();
+        let mut server = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
         server.state.busy();
         assert!(matches!(poll_head(&mut server), Poll::Ready(None)));
     }
@@ -1387,10 +1387,10 @@ mod tests {
     #[cfg(feature = "client")]
     #[test]
     fn conn_reads_empty_response_before_eof() {
-        let io = tokio_test::io::Builder::new()
+        let io = crate::test_support::mock_io::Builder::new()
             .read(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
             .build();
-        let mut conn = Conn::<_, Bytes, ClientTransaction>::new(Compat::new(io));
+        let mut conn = Conn::<_, Bytes, ClientTransaction>::new(crate::test_support::FuturesIo::new(io));
         conn.state.busy();
         conn.state.writing = Writing::KeepAlive;
         let (_, body, _) = ready(poll_head(&mut conn))
@@ -1402,17 +1402,17 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn conn_reads_body_and_reports_end() {
-        let io = tokio_test::io::Builder::new()
+        let io = crate::test_support::mock_io::Builder::new()
             .read(b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\n12345")
             .wait(std::time::Duration::from_secs(1))
             .build();
-        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
         let (_, body, _) = ready(poll_head(&mut conn))
             .expect("request")
             .expect("valid request");
         assert_eq!(body, DecodedLength::new(5));
 
-        tokio_test::task::spawn(()).enter(|cx, _| {
+        crate::test_support::task::spawn(std::future::ready(())).enter(|cx, _| {
             let frame = conn.poll_read_body(cx);
             let data = ready(frame)
                 .expect("body frame")
@@ -1430,8 +1430,8 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn closed_conn_cannot_read_or_write() {
-        let io = tokio_test::io::Builder::new().build();
-        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let io = crate::test_support::mock_io::Builder::new().build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
         conn.state.close();
         assert!(conn.is_read_closed());
         assert!(conn.is_write_closed());
@@ -1442,14 +1442,14 @@ mod tests {
     #[cfg(feature = "server")]
     #[test]
     fn conn_writes_chunked_body() {
-        let io = tokio_test::io::Builder::new()
+        let io = crate::test_support::mock_io::Builder::new()
             .write(b"7\r\nheaders\r\n0\r\n\r\n")
             .build();
-        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(Compat::new(io));
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(crate::test_support::FuturesIo::new(io));
         conn.state.writing = Writing::Body(Encoder::chunked());
         conn.write_body(Bytes::from_static(b"headers"));
         conn.end_body().unwrap();
-        tokio_test::task::spawn(()).enter(|cx, _| {
+        crate::test_support::task::spawn(std::future::ready(())).enter(|cx, _| {
             assert!(conn.poll_flush(cx).is_ready());
         });
     }

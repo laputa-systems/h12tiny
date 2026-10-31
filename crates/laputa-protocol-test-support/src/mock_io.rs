@@ -5,6 +5,7 @@ use std::fmt;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -73,7 +74,21 @@ impl Builder {
             sleep: None,
             read_wait: None,
             write_wait: None,
+            late: None,
         }
+    }
+
+    pub fn build_with_handle(&mut self) -> (Mock, Handle) {
+        let late = Arc::new(Mutex::new(VecDeque::new()));
+        let mock = Mock {
+            actions: std::mem::take(&mut self.actions),
+            name: std::mem::take(&mut self.name),
+            sleep: None,
+            read_wait: None,
+            write_wait: None,
+            late: Some(late.clone()),
+        };
+        (mock, Handle { late })
     }
 }
 
@@ -83,6 +98,21 @@ pub struct Mock {
     sleep: Option<Pin<Box<Timer>>>,
     read_wait: Option<Waker>,
     write_wait: Option<Waker>,
+    late: Option<Arc<Mutex<VecDeque<Action>>>>,
+}
+
+pub struct Handle {
+    late: Arc<Mutex<VecDeque<Action>>>,
+}
+
+impl Handle {
+    pub fn read(&mut self, buf: &[u8]) {
+        self.late.lock().unwrap().push_back(Action::Read(buf.to_vec()));
+    }
+
+    pub fn write(&mut self, buf: &[u8]) {
+        self.late.lock().unwrap().push_back(Action::Write(buf.to_vec()));
+    }
 }
 
 impl fmt::Debug for Mock {
@@ -95,6 +125,15 @@ impl fmt::Debug for Mock {
 }
 
 impl Mock {
+    fn absorb_late(&mut self) {
+        if let Some(late) = &self.late {
+            let mut late = late.lock().unwrap();
+            while let Some(action) = late.pop_front() {
+                self.actions.push_back(action);
+            }
+        }
+    }
+
     fn flush_empty(&mut self) {
         self.actions.retain(|action| match action {
             Action::Read(data) | Action::Write(data) => !data.is_empty(),
@@ -156,6 +195,7 @@ impl AsyncRead for Mock {
             return Poll::Ready(Ok(0));
         }
 
+        self.absorb_late();
         loop {
             if self.poll_wait(cx).is_pending() {
                 return Poll::Pending;
@@ -185,7 +225,13 @@ impl AsyncRead for Mock {
                     self.read_wait = Some(cx.waker().clone());
                     return Poll::Pending;
                 }
-                None => return Poll::Ready(Ok(0)),
+                None => {
+                    if self.late.is_some() {
+                        self.read_wait = Some(cx.waker().clone());
+                        return Poll::Pending;
+                    }
+                    return Poll::Ready(Ok(0));
+                }
                 Some(Action::Wait(_)) => unreachable!("waits are consumed above"),
             }
         }
@@ -203,6 +249,7 @@ impl AsyncWrite for Mock {
         }
 
         let name = self.name.clone();
+        self.absorb_late();
         loop {
             if self.poll_wait(cx).is_pending() {
                 return Poll::Pending;

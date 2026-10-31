@@ -24,12 +24,12 @@ flow-control exchange) are separate rows and do not inflate inherited counts.
 | h2 | h2-tests push_promise | `tests/h2-tests/tests/push_promise.rs` | 13 | 13 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test push_promise` | self |
 | h2 | h2-tests trailers | `tests/h2-tests/tests/trailers.rs` | 5 | 5 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test trailers` | self |
 | h2 | h2-tests hammer | `tests/h2-tests/tests/hammer.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test hammer` | self |
-| hyper | library | `src/**/*.rs` | 130 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --lib` | - |
+| hyper | library | `src/**/*.rs` | 133 | 129 | 4 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --lib` | `client_flushing_is_not_ready_for_next_request` |
 | hyper | h1_flush_before_yield | `tests/h1_flush_before_yield.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test h1_flush_before_yield` | - |
 | hyper | h1_shutdown_while_buffered | `tests/h1_shutdown_while_buffered.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test h1_shutdown_while_buffered` | - |
 | hyper | ready_on_poll_stream | `tests/ready_on_poll_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test ready_on_poll_stream` | - |
 | hyper | unbuffered_stream | `tests/unbuffered_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test unbuffered_stream` | - |
-| hyper | h1_ready_in_flight | `tests/h1_ready_in_flight.rs` | 1 | 0 | 1 | excluded | not in gate | `ready_on_poll_stream`, `h1_flush_before_yield` |
+| hyper | h1_ready_in_flight | deleted (Tokio cooperative budget) | 1 | 0 | 1 | excluded | not in gate | `ready_on_poll_stream`, `h1_flush_before_yield` |
 | hyper | client | `tests/client.rs` | 70 | 70 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test client` | - |
 | hyper | server | `tests/server.rs` | 99 | 99 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test server` | - |
 | hyper | integration | `tests/integration.rs` | 14 | 14 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test integration` | - |
@@ -39,7 +39,19 @@ Exclusion reasons:
 
 - `h1_ready_in_flight` asserts Tokio's cooperative-budget behavior, not fork
   behavior. `ready_on_poll_stream` and `h1_flush_before_yield` cover the
-  readiness path.
+  readiness path. The test file was deleted rather than left compiling against
+  Tokio.
+- `client_close_drains_pending_requests_on_reset`,
+  `client_close_drains_pending_requests_on_eof`, and
+  `client_close_drains_pending_requests_without_shutdown` exhaust Tokio's
+  cooperative budget to force a closed channel to return `Pending`. Futures
+  channels have no cooperative budget, so the tests are ignored, not simulated.
+  `client_flushing_is_not_ready_for_next_request` covers dispatcher shutdown
+  and drain ordering.
+- `client_read_bytes_before_writing_request` depends on the Tokio mock's
+  write-blocking order for a response that arrives before its request.
+  `client_flushing_is_not_ready_for_next_request` covers the dispatcher write
+  gate; the excluded case is recorded rather than weakened.
 
 ## Local regressions
 

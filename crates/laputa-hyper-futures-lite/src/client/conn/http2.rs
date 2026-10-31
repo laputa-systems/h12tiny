@@ -596,10 +596,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    fn spawn_local<F: std::future::Future>(_future: F) {}
 
-    #[tokio::test]
-    #[ignore] // only compilation is checked
-    async fn send_sync_executor_of_non_send_futures() {
+        #[ignore] // only compilation is checked
+    #[test]
+    fn send_sync_executor_of_non_send_futures() {
+        crate::test_support::block_on(async {
         #[derive(Clone)]
         struct LocalTokioExecutor;
 
@@ -609,7 +611,7 @@ mod tests {
         {
             fn execute(&self, fut: F) {
                 // This will spawn into the currently running `LocalSet`.
-                tokio::task::spawn_local(fut);
+                spawn_local(fut);
             }
         }
 
@@ -623,15 +625,17 @@ mod tests {
             .await
             .unwrap();
 
-            tokio::task::spawn_local(async move {
+            spawn_local(async move {
                 conn.await.unwrap();
             });
         }
+        });
     }
 
-    #[tokio::test]
-    #[ignore] // only compilation is checked
-    async fn not_send_not_sync_executor_of_not_send_futures() {
+        #[ignore] // only compilation is checked
+    #[test]
+    fn not_send_not_sync_executor_of_not_send_futures() {
+        crate::test_support::block_on(async {
         #[derive(Clone)]
         struct LocalTokioExecutor {
             _x: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -643,7 +647,7 @@ mod tests {
         {
             fn execute(&self, fut: F) {
                 // This will spawn into the currently running `LocalSet`.
-                tokio::task::spawn_local(fut);
+                spawn_local(fut);
             }
         }
 
@@ -659,15 +663,17 @@ mod tests {
                 .await
                 .unwrap();
 
-            tokio::task::spawn_local(async move {
+            spawn_local(async move {
                 conn.await.unwrap();
             });
         }
+        });
     }
 
-    #[tokio::test]
-    #[ignore] // only compilation is checked
-    async fn send_not_sync_executor_of_not_send_futures() {
+        #[ignore] // only compilation is checked
+    #[test]
+    fn send_not_sync_executor_of_not_send_futures() {
+        crate::test_support::block_on(async {
         #[derive(Clone)]
         struct LocalTokioExecutor {
             _x: std::marker::PhantomData<std::cell::Cell<()>>,
@@ -679,7 +685,7 @@ mod tests {
         {
             fn execute(&self, fut: F) {
                 // This will spawn into the currently running `LocalSet`.
-                tokio::task::spawn_local(fut);
+                spawn_local(fut);
             }
         }
 
@@ -695,15 +701,17 @@ mod tests {
                 .await
                 .unwrap();
 
-            tokio::task::spawn_local(async move {
+            spawn_local(async move {
                 conn.await.unwrap();
             });
         }
+        });
     }
 
-    #[tokio::test]
-    #[ignore] // only compilation is checked
-    async fn send_sync_executor_of_send_futures() {
+        #[ignore] // only compilation is checked
+    #[test]
+    fn send_sync_executor_of_send_futures() {
+        crate::test_support::block_on(async {
         #[derive(Clone)]
         struct TokioExecutor;
 
@@ -713,7 +721,7 @@ mod tests {
             F::Output: Send + 'static,
         {
             fn execute(&self, fut: F) {
-                tokio::task::spawn(fut);
+                spawn_local(fut);
             }
         }
 
@@ -727,15 +735,17 @@ mod tests {
             .await
             .unwrap();
 
-            tokio::task::spawn(async move {
+            spawn_local(async move {
                 conn.await.unwrap();
             });
         }
+        });
     }
 
-    #[tokio::test]
-    #[ignore] // only compilation is checked
-    async fn send_not_sync_executor_of_send_futures() {
+        #[ignore] // only compilation is checked
+    #[test]
+    fn send_not_sync_executor_of_send_futures() {
+        crate::test_support::block_on(async {
         #[derive(Clone)]
         struct TokioExecutor {
             // !Sync
@@ -748,7 +758,7 @@ mod tests {
             F::Output: Send + 'static,
         {
             fn execute(&self, fut: F) {
-                tokio::task::spawn(fut);
+                spawn_local(fut);
             }
         }
 
@@ -764,10 +774,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            tokio::task::spawn_local(async move {
+            spawn_local(async move {
                 // can't use spawn here because when executor is !Send
                 conn.await.unwrap();
             });
         }
+        });
     }
 }

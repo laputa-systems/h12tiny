@@ -118,16 +118,17 @@ mod tests {
     use super::super::Compat;
     use super::Rewind;
     use bytes::Bytes;
-    use tokio::io::AsyncReadExt;
+    use smol::io::AsyncReadExt;
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn partial_rewind() {
+    #[test]
+    fn partial_rewind() {
+        crate::test_support::block_on(async {
         let underlying = [104, 101, 108, 108, 111];
 
-        let mock = tokio_test::io::Builder::new().read(&underlying).build();
+        let mock = crate::test_support::mock_io::Builder::new().read(&underlying).build();
 
-        let mut stream = Compat::new(Rewind::new(Compat::new(mock)));
+        let mut stream = Compat::new(Rewind::new(crate::test_support::FuturesIo::new(mock)));
 
         // Read off some bytes, ensure we filled o1
         let mut buf = [0; 2];
@@ -141,16 +142,18 @@ mod tests {
 
         // At this point we should have read everything that was in the MockStream
         assert_eq!(&buf, &underlying);
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn full_rewind() {
+    #[test]
+    fn full_rewind() {
+        crate::test_support::block_on(async {
         let underlying = [104, 101, 108, 108, 111];
 
-        let mock = tokio_test::io::Builder::new().read(&underlying).build();
+        let mock = crate::test_support::mock_io::Builder::new().read(&underlying).build();
 
-        let mut stream = Compat::new(Rewind::new(Compat::new(mock)));
+        let mut stream = Compat::new(Rewind::new(crate::test_support::FuturesIo::new(mock)));
 
         let mut buf = [0; 5];
         stream.read_exact(&mut buf).await.expect("read1");
@@ -162,5 +165,6 @@ mod tests {
         stream.read_exact(&mut buf).await.expect("read1");
 
         assert_eq!(&buf, &underlying);
+        });
     }
 }

@@ -250,8 +250,9 @@ mod tests {
         futures_util::future::poll_fn(|cx| rx.poll_next(cx)).await
     }
 
-    #[tokio::test]
-    async fn error_queued_behind_accepted_data() {
+    #[test]
+    fn error_queued_behind_accepted_data() {
+        crate::test_support::block_on(async {
         let (mut tx, mut rx) = channel(false);
         tx.try_send_data(Bytes::from_static(b"data")).unwrap();
         tx.send_error(crate::Error::new_incomplete());
@@ -260,10 +261,12 @@ mod tests {
         assert_eq!(recv(&mut rx).await.unwrap().unwrap(), "data");
         assert!(recv(&mut rx).await.unwrap().is_err());
         assert!(recv(&mut rx).await.is_none());
+        });
     }
 
-    #[tokio::test]
-    async fn trailers_follow_data_close() {
+    #[test]
+    fn trailers_follow_data_close() {
+        crate::test_support::block_on(async {
         let (mut tx, mut rx) = channel(false);
         let mut trailers = HeaderMap::new();
         trailers.insert("x-trailer", "value".parse().unwrap());
@@ -272,6 +275,7 @@ mod tests {
 
         assert!(recv(&mut rx).await.is_none());
         assert_eq!(rx.take_trailers().unwrap()["x-trailer"], "value");
+        });
     }
 
     #[test]

@@ -740,8 +740,9 @@ mod tests {
     */
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_chunk_size() {
+    #[test]
+    fn test_read_chunk_size() {
+        crate::test_support::block_on(async {
         use std::io::ErrorKind::{InvalidData, InvalidInput, UnexpectedEof};
 
         async fn read(s: &str) -> u64 {
@@ -853,11 +854,13 @@ mod tests {
         read_err("1;reject\nnewlines\r\n", InvalidData).await;
         // Overflow
         read_err("f0000000000000003\r\n", InvalidData).await;
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_sized_early_eof() {
+    #[test]
+    fn test_read_sized_early_eof() {
+        crate::test_support::block_on(async {
         let mut bytes = &b"foo bar"[..];
         let mut decoder = Decoder::length(10);
         assert_eq!(
@@ -872,11 +875,13 @@ mod tests {
         );
         let e = decoder.decode_fut(&mut bytes).await.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_chunked_early_eof() {
+    #[test]
+    fn test_read_chunked_early_eof() {
+        crate::test_support::block_on(async {
         let mut bytes = &b"\
             9\r\n\
             foo bar\
@@ -894,11 +899,13 @@ mod tests {
         );
         let e = decoder.decode_fut(&mut bytes).await.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_chunked_single_read() {
+    #[test]
+    fn test_read_chunked_single_read() {
+        crate::test_support::block_on(async {
         let mut mock_buf = &b"10\r\n1234567890abcdef\r\n0\r\n"[..];
         let buf = Decoder::chunked(None, None)
             .decode_fut(&mut mock_buf)
@@ -909,10 +916,12 @@ mod tests {
         assert_eq!(16, buf.len());
         let result = String::from_utf8(buf.as_ref().to_vec()).expect("decode String");
         assert_eq!("1234567890abcdef", &result);
+        });
     }
 
-    #[tokio::test]
-    async fn test_read_chunked_with_missing_zero_digit() {
+    #[test]
+    fn test_read_chunked_with_missing_zero_digit() {
+        crate::test_support::block_on(async {
         // After reading a valid chunk, the ending is missing a zero.
         let mut mock_buf = &b"1\r\nZ\r\n\r\n\r\n"[..];
         let mut decoder = Decoder::chunked(None, None);
@@ -929,10 +938,12 @@ mod tests {
             .await
             .expect_err("decode 2");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        });
     }
 
-    #[tokio::test]
-    async fn test_read_chunked_extensions_over_limit() {
+    #[test]
+    fn test_read_chunked_extensions_over_limit() {
+        crate::test_support::block_on(async {
         // construct a chunked body where each individual chunked extension
         // is totally fine, but combined is over the limit.
         let per_chunk = super::CHUNKED_EXTENSIONS_LIMIT * 2 / 3;
@@ -960,21 +971,25 @@ mod tests {
             .expect_err("decode2");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "chunk extensions over limit");
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_chunked_trailer_with_missing_lf() {
+    #[test]
+    fn test_read_chunked_trailer_with_missing_lf() {
+        crate::test_support::block_on(async {
         let mut mock_buf = &b"10\r\n1234567890abcdef\r\n0\r\nbad\r\r\n"[..];
         let mut decoder = Decoder::chunked(None, None);
         decoder.decode_fut(&mut mock_buf).await.expect("decode");
         let e = decoder.decode_fut(&mut mock_buf).await.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_chunked_after_eof() {
+    #[test]
+    fn test_read_chunked_after_eof() {
+        crate::test_support::block_on(async {
         let mut mock_buf = &b"10\r\n1234567890abcdef\r\n0\r\n\r\n"[..];
         let mut decoder = Decoder::chunked(None, None);
 
@@ -1006,6 +1021,7 @@ mod tests {
             .into_data()
             .expect("unknown frame type");
         assert_eq!(0, buf.len());
+        });
     }
 
     // perform an async read using a custom buffer size and causing a blocking
@@ -1013,20 +1029,20 @@ mod tests {
     async fn read_async(mut decoder: Decoder, content: &[u8], block_at: usize) -> String {
         let mut outs = Vec::new();
 
-        let mut ins = crate::common::io::Compat::new(if block_at == 0 {
-            tokio_test::io::Builder::new()
+        let mut ins = crate::test_support::FuturesIo::new(if block_at == 0 {
+            crate::test_support::mock_io::Builder::new()
                 .wait(Duration::from_millis(10))
                 .read(content)
                 .build()
         } else {
-            tokio_test::io::Builder::new()
+            crate::test_support::mock_io::Builder::new()
                 .read(&content[..block_at])
                 .wait(Duration::from_millis(10))
                 .read(&content[block_at..])
                 .build()
         });
 
-        let mut ins = &mut ins as &mut (dyn Read + Unpin);
+        let mut ins = &mut ins as &mut (dyn crate::rt::Read + Unpin);
 
         loop {
             let buf = decoder
@@ -1055,25 +1071,31 @@ mod tests {
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_length_async() {
+    #[test]
+    fn test_read_length_async() {
+        crate::test_support::block_on(async {
         let content = "foobar";
         all_async_cases(content, content, Decoder::length(content.len() as u64)).await;
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_chunked_async() {
+    #[test]
+    fn test_read_chunked_async() {
+        crate::test_support::block_on(async {
         let content = "3\r\nfoo\r\n3\r\nbar\r\n0\r\n\r\n";
         let expected = "foobar";
         all_async_cases(content, expected, Decoder::chunked(None, None)).await;
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn test_read_eof_async() {
+    #[test]
+    fn test_read_eof_async() {
+        crate::test_support::block_on(async {
         let content = "foobar";
         all_async_cases(content, content, Decoder::eof()).await;
+        });
     }
 
     #[cfg(all(feature = "nightly", not(miri)))]
@@ -1167,8 +1189,9 @@ mod tests {
         assert_eq!(values, ["first", "second"]);
     }
 
-    #[tokio::test]
-    async fn test_trailer_max_headers_enforced() {
+    #[test]
+    fn test_trailer_max_headers_enforced() {
+        crate::test_support::block_on(async {
         let h1_max_headers = 10;
         let mut scratch = vec![];
         scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
@@ -1195,10 +1218,12 @@ mod tests {
             .await
             .expect_err("trailer fields over limit");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        });
     }
 
-    #[tokio::test]
-    async fn test_trailer_max_headers_allows_exact_limit() {
+    #[test]
+    fn test_trailer_max_headers_allows_exact_limit() {
+        crate::test_support::block_on(async {
         let h1_max_headers = 10;
         let mut scratch = vec![];
         scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
@@ -1225,10 +1250,12 @@ mod tests {
             .into_trailers()
             .expect("unknown frame type");
         assert_eq!(trailers.len(), h1_max_headers);
+        });
     }
 
-    #[tokio::test]
-    async fn test_trailer_max_header_size_huge_trailer() {
+    #[test]
+    fn test_trailer_max_header_size_huge_trailer() {
+        crate::test_support::block_on(async {
         let max_header_size = 1024;
         let mut scratch = vec![];
         scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
@@ -1253,10 +1280,12 @@ mod tests {
             .await
             .expect_err("trailers over limit");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        });
     }
 
-    #[tokio::test]
-    async fn test_trailer_max_header_size_many_small_trailers() {
+    #[test]
+    fn test_trailer_max_header_size_many_small_trailers() {
+        crate::test_support::block_on(async {
         let max_headers = 10;
         let header_size = 64;
         let mut scratch = vec![];
@@ -1286,5 +1315,6 @@ mod tests {
             .await
             .expect_err("trailers over limit");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        });
     }
 }

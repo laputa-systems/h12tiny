@@ -657,11 +657,12 @@ mod tests {
     use crate::common::io::Compat;
     use std::time::Duration;
 
-    use tokio_test::io::Builder as Mock;
+    use crate::test_support::mock_io::Builder as Mock;
 
-    #[tokio::test]
-    #[ignore]
-    async fn iobuf_write_empty_slice() {
+        #[ignore]
+    #[test]
+    fn iobuf_write_empty_slice() {
+        crate::test_support::block_on(async {
         // TODO(eliza): can i have writev back pls T_T
         // // First, let's just check that the Mock would normally return an
         // // error on an unexpected write, even if the buffer is empty...
@@ -678,11 +679,13 @@ mod tests {
         // let mock = Mock::new().build();
         // let mut io_buf = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         // io_buf.flush().await.expect("should short-circuit flush");
+        });
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn parse_reads_until_blocked() {
+        #[test]
+    fn parse_reads_until_blocked() {
+        crate::test_support::block_on(async {
         use crate::proto::h1::ClientTransaction;
 
         let _ = pretty_env_logger::try_init();
@@ -694,7 +697,7 @@ mod tests {
             .wait(Duration::from_secs(1))
             .build();
 
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(crate::test_support::FuturesIo::new(mock));
 
         // We expect a `parse` to be not ready, and so can't await it directly.
         // Rather, this `poll_fn` will wrap the `Poll` result.
@@ -723,6 +726,7 @@ mod tests {
             buffered.read_buf,
             b"HTTP/1.1 200 OK\r\nServer: hyper\r\n"[..]
         );
+        });
     }
 
     #[test]
@@ -837,7 +841,7 @@ mod tests {
     #[cfg(debug_assertions)] // needs to trigger a debug_assert
     fn write_buf_requires_non_empty_bufs() {
         let mock = Mock::new().build();
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(crate::test_support::FuturesIo::new(mock));
 
         buffered.buffer(Cursor::new(Vec::new()));
     }
@@ -866,13 +870,14 @@ mod tests {
     */
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn write_buf_flatten() {
+        #[test]
+    fn write_buf_flatten() {
+        crate::test_support::block_on(async {
         let _ = pretty_env_logger::try_init();
 
         let mock = Mock::new().write(b"hello world, it's hyper!").build();
 
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(crate::test_support::FuturesIo::new(mock));
         buffered.write_buf.set_strategy(WriteStrategy::Flatten);
 
         buffered.headers_buf().extend(b"hello ");
@@ -882,6 +887,7 @@ mod tests {
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 0);
 
         buffered.flush().await.expect("flush");
+        });
     }
 
     #[test]
@@ -920,8 +926,9 @@ mod tests {
     }
 
     #[cfg(not(miri))]
-    #[tokio::test]
-    async fn write_buf_queue_disable_auto() {
+        #[test]
+    fn write_buf_queue_disable_auto() {
+        crate::test_support::block_on(async {
         let _ = pretty_env_logger::try_init();
 
         let mock = Mock::new()
@@ -931,7 +938,7 @@ mod tests {
             .write(b"hyper!")
             .build();
 
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(crate::test_support::FuturesIo::new(mock));
         buffered.write_buf.set_strategy(WriteStrategy::Queue);
 
         // we have 4 buffers, and vec IO disabled, but explicitly said
@@ -946,6 +953,7 @@ mod tests {
         buffered.flush().await.expect("flush");
 
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 0);
+        });
     }
 
     // #[cfg(feature = "nightly")]

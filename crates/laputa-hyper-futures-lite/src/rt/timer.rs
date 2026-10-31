@@ -18,7 +18,7 @@
 //! impl Timer for TokioTimer {
 //!     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Sleep>> {
 //!         Box::pin(TokioSleep {
-//!             inner: tokio::time::sleep(duration),
+//!             inner: smol::Timer::after(duration),
 //!         })
 //!     }
 //!

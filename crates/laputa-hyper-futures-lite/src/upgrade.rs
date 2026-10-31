@@ -382,8 +382,9 @@ mod tests {
         let upgraded = Upgraded::new(Mock, Bytes::new());
 
         let upgraded = upgraded
-            .downcast::<crate::common::io::Compat<std::io::Cursor<Vec<u8>>>>()
-            .unwrap_err();
+            .downcast::<crate::test_support::FuturesIo<crate::test_support::mock_io::Mock>>()
+            .err()
+            .expect("wrong type");
 
         upgraded.downcast::<Mock>().unwrap();
     }
