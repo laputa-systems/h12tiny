@@ -7,6 +7,7 @@ Tokio-free Rust HTTP components: a futures-I/O client and server, a separate blo
 - Build: `cargo build --workspace --all-features`
 - Test: `cargo test --workspace --all-features`
 - Fork checks: see [verification](docs/verification.md)
+- Fork test classification and the verification campaign record: [parity ledger](docs/fork-test-parity.md), [campaign](docs/CAMPAIGN-FORK-VERIFICATION.md)
 - Feature and dependency isolation: `scripts/check-features.sh`
 - Normal dependency policy: `sh scripts/check-normal-dependencies.sh`
 - Minimum compiler versions: `sh scripts/check-msrv.sh`
