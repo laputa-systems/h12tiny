@@ -1,5 +1,5 @@
 Prefix: H12T
-Next: 17
+Next: 16
 
 ### H12T-12 · P1 · Unbounded retry, fail-open defaults, and deadline-free shutdown
 
@@ -10,15 +10,6 @@ Next: 17
 - **Fix with:** `lifecycle-concurrency`
 - **Effort:** M
 - **Design:** `docs/rfc/H12T-12-production-bounds.md`
-
-### H12T-13 · P1 · Fork protocol surface is unexercised by futures-I/O tests
-
-- **Area:** Tests
-- **Where:** `docs/verification.md:43-47`, `crates/laputa-hyper-futures-lite/src/client/tests.rs:2`, `crates/laputa-hyper-futures-lite/src/mock.rs:1`
-- **Problem:** The only futures-I/O H2 proof cited is a focused `WINDOW_UPDATE` plus next-data-frame check. The inherited Hyper/H2 Tokio harnesses require adaptation before they exercise the forks, and `docs/verification.md:34-36` excludes forks from the workspace test command. Fork `TODO`/`XXX` notes (`proto/h1/conn.rs:355`, `proto/h2/ping.rs:277`) name suspected waker and error bugs with no owning integration test.
-- **Recommendation:** Declare the ported-vs-skipped harness list explicitly and port or delete one harness at a time; block protocol changes on a futures-I/O test.
-- **Fix with:** `renovate-tests`
-- **Effort:** L
 
 ### H12T-14 · P2 · Client and body builders admit invalid states that fail at runtime
 

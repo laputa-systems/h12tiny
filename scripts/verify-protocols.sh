@@ -153,8 +153,7 @@ check_ledger_file() {
 
     pending=$(awk -F'|' '
         /^\|/ &&
-        $2 !~ /Fork/ &&
-        $2 !~ /^[[:space:]]*-+[[:space:]]*$/ &&
+        $2 ~ /^[[:space:]]*(h2|hyper|fastwebsockets|shared)[[:space:]]*$/ &&
         $8 ~ /not ported/ { count++ }
         END { print count + 0 }
     ' "$LEDGER")
@@ -164,15 +163,22 @@ check_ledger_file() {
     fi
 
     exclusions=$(awk -F'|' '
-        /^\|/ && $2 !~ /Fork/ && $2 !~ /^[[:space:]]*-+[[:space:]]*$/ &&
-        $7 ~ /excluded/ { count++ }
-        END { print count + 0 }
+        /^\|/ && $2 ~ /^[[:space:]]*(h2|hyper|fastwebsockets|shared)[[:space:]]*$/ {
+            value = $7
+            gsub(/[^0-9]/, "", value)
+            if (value != "") total += value
+        }
+        END { print total + 0 }
     ' "$LEDGER")
     for fork in h2 hyper; do
         count=$(awk -F'|' -v fork="$fork" '
             /^\|/ && $2 !~ /Fork/ && $2 !~ /^[[:space:]]*-+[[:space:]]*$/ &&
-            $2 ~ "^[[:space:]]*" fork "[[:space:]]*$" && $7 ~ /excluded/ { count++ }
-            END { print count + 0 }
+            $2 ~ "^[[:space:]]*" fork "[[:space:]]*$" {
+                value = $7
+                gsub(/[^0-9]/, "", value)
+                if (value != "") total += value
+            }
+            END { print total + 0 }
         ' "$LEDGER")
         if [ "$count" -gt 10 ]; then
             printf 'FAIL: %s ledger has %s exclusions, cap is 10\n' "$fork" "$count" >&2
@@ -180,7 +186,37 @@ check_ledger_file() {
         fi
     done
 
-    printf 'PASS: ledger statuses closed (%s exclusions)\n' "$exclusions"
+    while IFS='|' read -r _ fork suite _ reference _ _ status command _; do
+        fork=$(printf '%s' "$fork" | sed 's/^ *//; s/ *$//')
+        status=$(printf '%s' "$status" | sed 's/^ *//; s/ *$//')
+        case "$fork" in
+            h2|hyper|fastwebsockets|shared) ;;
+            *) continue ;;
+        esac
+        [ "$status" = "excluded" ] && continue
+        command=$(printf '%s' "$command" | sed 's/^ *//; s/ *$//; s/^`//; s/`$//')
+        [ -z "$command" ] && continue
+        case "$command" in *wake_loss_is_detected*) continue ;; esac
+        reference=$(printf '%s' "$reference" | tr -d ' ')
+        case "$reference" in ''|*[!0-9]*) continue ;; esac
+
+        list_output=$(mktemp "$TMPDIR/ledger-list.XXXXXX")
+        if ! sh -c "$command -- --list" >"$list_output" 2>&1; then
+            cat "$list_output" >&2
+            rm -f "$list_output"
+            printf 'FAIL: ledger suite %s could not list tests\n' "$suite" >&2
+            return 1
+        fi
+        actual=$(grep -c ': test$' "$list_output" || true)
+        rm -f "$list_output"
+        if [ "$actual" -ne "$reference" ]; then
+            printf 'FAIL: ledger suite %s says %s tests but --list found %s\n' \
+                "$suite" "$reference" "$actual" >&2
+            return 1
+        fi
+    done <"$LEDGER"
+
+    printf 'PASS: ledger statuses and --list counts match (%s exclusions)\n' "$exclusions"
 }
 
 print_counts_summary() {

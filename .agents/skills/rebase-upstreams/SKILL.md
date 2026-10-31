@@ -30,7 +30,10 @@ the h2 and hyper branch histories and upstream remotes.
   survive the rebase.
 - Resolve conflicts in favor of the futures-lite port for `futures-io`,
   `futures-lite`, renamed `laputa-*` packages, non-optional `futures-channel`,
-  and gated `tracing`. Keep upstream changes elsewhere.
+  and gated `tracing`. Preserve `crates/laputa-protocol-test-support` and the
+  futures-I/O test support under each fork's `tests/`; do not reintroduce
+  Tokio transports or executors into those test graphs. Keep upstream changes
+  elsewhere.
 - Resolve port commits that change a package version to `<upstream>-beta.0`.
   Keep exact `=` requirements on fork dependencies.
 - Keep every `rust-toolchain.toml` channel unchanged.
@@ -129,9 +132,10 @@ the h2 and hyper branch histories and upstream remotes.
    cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full
    ```
 
-   Hyper's Tokio-based library tests are not a gate. `cargo check --features
-   full` is the Hyper gate. Compare any other failure with the fork branch
-   before the rebase.
+   `sh scripts/verify-protocols.sh` is the fork gate. It covers Hyper check
+   and the inherited Hyper tests, H2 library and integration tests, the
+   wake-driven flow-control regression, fastwebsockets, and the shared test
+   support crate. Compare any failure with the fork branch before the rebase.
 9. Fastwebsockets has no upstream. Run `cargo test --all-features` from
    `crates/laputa-fastwebsockets-futures-lite`. Bump its version only when its source
    changes.
@@ -152,9 +156,11 @@ the h2 and hyper branch histories and upstream remotes.
     cargo tree -i laputa-hyper-futures-lite
     cargo tree --features websocket -i laputa-fastwebsockets-futures-lite
     ```
-11. Run `cargo test --workspace --all-features`, `scripts/check-features.sh`,
-    and `sh scripts/check-normal-dependencies.sh`. Run `make lint` when those
-    checks pass. The `websocket` feature exercises the fastwebsockets fork.
+11. Run `sh scripts/verify-protocols.sh`, `cargo test --workspace
+    --all-features`, `scripts/check-features.sh`, and `sh
+    scripts/check-normal-dependencies.sh`. Run `make lint` when those checks
+    pass. The `websocket` feature exercises the fastwebsockets fork. The gate
+    is the fork proof; the individual fork commands are for iterating.
 12. Keep the updated root `Cargo.lock`; it records local path dependencies.
     Confirm no `[patch]` section remains in the root or fork manifests. Remove
     successful temporary clones. Leave conflicted clones in place.

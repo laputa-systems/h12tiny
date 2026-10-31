@@ -24,11 +24,11 @@ flow-control exchange) are separate rows and do not inflate inherited counts.
 | h2 | h2-tests push_promise | `tests/h2-tests/tests/push_promise.rs` | 13 | 13 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test push_promise` | self |
 | h2 | h2-tests trailers | `tests/h2-tests/tests/trailers.rs` | 5 | 5 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test trailers` | self |
 | h2 | h2-tests hammer | `tests/h2-tests/tests/hammer.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test hammer` | self |
-| hyper | library | `src/**/*.rs` | 133 | 129 | 4 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --lib` | `client_flushing_is_not_ready_for_next_request` |
-| hyper | h1_flush_before_yield | `tests/h1_flush_before_yield.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test h1_flush_before_yield` | - |
-| hyper | h1_shutdown_while_buffered | `tests/h1_shutdown_while_buffered.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test h1_shutdown_while_buffered` | - |
-| hyper | ready_on_poll_stream | `tests/ready_on_poll_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test ready_on_poll_stream` | - |
-| hyper | unbuffered_stream | `tests/unbuffered_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test unbuffered_stream` | - |
+| hyper | library | `src/**/*.rs` | 133 | 129 | 4 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --lib` | `client_flushing_is_not_ready_for_next_request` |
+| hyper | h1_flush_before_yield | `tests/h1_flush_before_yield.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test h1_flush_before_yield` | - |
+| hyper | h1_shutdown_while_buffered | `tests/h1_shutdown_while_buffered.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test h1_shutdown_while_buffered` | - |
+| hyper | ready_on_poll_stream | `tests/ready_on_poll_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test ready_on_poll_stream` | - |
+| hyper | unbuffered_stream | `tests/unbuffered_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test unbuffered_stream` | - |
 | hyper | h1_ready_in_flight | deleted (Tokio cooperative budget) | 1 | 0 | 1 | excluded | not in gate | `ready_on_poll_stream`, `h1_flush_before_yield` |
 | hyper | client | `tests/client.rs` | 70 | 70 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test client` | - |
 | hyper | server | `tests/server.rs` | 99 | 99 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test server` | - |
@@ -53,6 +53,30 @@ Exclusion reasons:
   `client_flushing_is_not_ready_for_next_request` covers the dispatcher write
   gate; the excluded case is recorded rather than weakened.
 
+### Upstream ignored tests
+
+These remain `#[ignore]`d exactly as upstream, so they are counted as ported
+tests with an ignored outcome rather than as exclusions. None of them gate a
+port change.
+
+- H2 library (1): `hpack::encoder::test::test_evicted_overflow`.
+- H2 integration (12): `request_with_h1_version`, `read_frame_too_big`,
+  `read_headers_empty_payload`, `read_headers_with_pseudo`,
+  `read_headers_without_pseudo`, `expand_window_calls_are_coalesced`,
+  `expand_window_sends_window_update`, `recv_window_update_causes_overflow`,
+  `stream_close_by_recv_reset_frame_releases_capacity`,
+  `recv_push_promise_with_wrong_authority_is_stream_error`,
+  `accept_with_pending_connections_after_socket_close`,
+  `recv_trailers_without_eos`.
+- Hyper library (6 upstream): the five HTTP/2 executor compile checks
+  (`send_sync_executor_of_send_futures`,
+  `send_sync_executor_of_non_send_futures`,
+  `send_not_sync_executor_of_send_futures`,
+  `send_not_sync_executor_of_not_send_futures`,
+  `not_send_not_sync_executor_of_not_send_futures`) and
+  `iobuf_write_empty_slice`.
+- Hyper server (1): `response_body_lengths::chunked_response_trumps_length`.
+
 ## Local regressions
 
 | Fork | Suite | Source file | Reference count | Ported | Excluded | Status | Command | Covering test |
@@ -68,7 +92,7 @@ temporary directories were under `.work/`.
 
 | Reference | Tag and commit | Command | Outcome |
 | --- | --- | --- | --- |
-| h2 0.4.20 | `v0.4.20` `b0e890842ac16d3c76836fd4fcc06421acb15fa7` | `cargo test -p h2 --lib` | 444 passed, 0 failed, 1 ignored |
+| h2 0.4.20 | `v0.4.20` `b0e890842ac16d3c76836fd4fcc06421acb15fa7` | `cargo test --lib` | 444 passed, 0 failed, 1 ignored |
 | h2 0.4.20 | same | `cargo test -p h2-tests` | all 12 targets green: client_request 46+1 ignored, codec_read 11+4 ignored, codec_write 4, flow_control 48+4 ignored, hammer 1, informational_responses 7, ping_pong 5, prioritization 7, push_promise 12+1 ignored, server 44+1 ignored, stream_states 34, trailers 4+1 ignored |
 | hyper 1.12.0 | `v1.12.0` `7f67699ce32d717081deb7018b4da7d679277ac0` | `cargo test --features full --tests` | all targets green: lib 124+6 ignored, client 70, server 98+1 ignored, integration 14, h1_flush_before_yield 1, h1_ready_in_flight 1, h1_shutdown_while_buffered 1, ready_on_poll_stream 1, unbuffered_stream 1 |
 
@@ -116,3 +140,6 @@ control-frame write is pending) the test passed 20 consecutive runs and the
 | Date | Commit | Host | Command | Result | Wall |
 | --- | --- | --- | --- | --- | --- |
 | 2026-10-31 | `FVP-01` | Linux x86_64, 32 cores, load 38.1 | `sh scripts/verify-protocols.sh --suite h2-lib --suite h2-flow --suite hyper-check --suite fastwebsockets` | pass (446 + 1 + 37 tests, Hyper check) | 16 s |
+| 2026-10-31 | `FVP-13` | Linux x86_64, 32 cores | `sh scripts/verify-protocols.sh` | pass: H2 lib 446 passed/1 ignored, H2 flow 1, H2 inherited 227 passed/12 ignored, Hyper tests 309 passed/11 ignored, fastwebsockets 37, support 6 | 34 s |
+| 2026-10-31 | `FVP-13` | Linux x86_64, 32 cores | `sh scripts/verify-protocols.sh --check-ledger` | pass: statuses closed, 5 exclusions, every `--list` count matches | 2 s |
+| 2026-10-31 | `FVP-13` | Linux x86_64, 32 cores | `cargo test --locked --workspace --all-features` | pass | 16 s |

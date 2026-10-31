@@ -73,6 +73,9 @@ jobs:
       - name: Full fork gate
         if: runner.os == 'Linux'
         run: sh scripts/verify-protocols.sh
+      - name: Ledger parity
+        if: runner.os == 'Linux'
+        run: sh scripts/verify-protocols.sh --check-ledger
       - name: Fork smoke
         if: runner.os == 'macOS'
         run: |

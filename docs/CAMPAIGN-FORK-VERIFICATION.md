@@ -6,11 +6,12 @@
 
 **Baseline:** commit `57b545c`, 2026-10-31. Root workspace green; inherited H2 and Hyper suites red before they compile. This campaign starts at `FVP-01`.
 
-**Accepted:** none.
+**Accepted:** FVP-01 through FVP-13 local acceptance, 2026-10-31. The first
+GitHub `protocol-forks` run and the macOS smoke job remain owner-verified.
 
 **Red:** `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --workspace --tests` fails in `h2-support` with 8 errors; `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --tests` fails across 9 targets with 428 error lines, including 188 in `tests/client.rs`.
 
-**Next:** `FVP-01` (gate skeleton, ledger, CI job).
+**Next:** owner opens the PR and confirms the `protocol-forks` job is green.
 
 **Resume:** `sh scripts/verify-protocols.sh`; then continue at the first red or unported row in `docs/fork-test-parity.md`.
 
@@ -38,7 +39,7 @@
 - **H2 first, Hyper second; shared support third.** The H2 flow-control and deadlock work is the highest-risk area, so its harness and regression are proven before the larger Hyper port.
 - **h2#975 is a gated finding, not an assumed fix.** Build the deterministic regression first. If it fails on the current fork, port the upstream fix if one exists; otherwise apply the minimal upstream-aligned fix (keep reading while a control-frame write is pending; do not restructure the state machine), bounded to 200 lines and no public API change. If it does not fail after 20 deterministic runs, record `not reproduced` with the exact topology and do not add an ignored gating test. A non-gating 12-run TLS soak under the smolith runtime is corroboration, not the gate.
 - **CI runs the full fork gate on Linux and a smoke subset on macOS.** The smoke subset is H2 library tests, the H2 flow-control test, Hyper `--features full` check, and fastwebsockets. A full macOS fork run is a follow-on; it is not required to close this campaign.
-- **Exclusions are capped.** At most 10 tests per fork may be excluded, each with a reason and a named covering test in the ledger. No broad `#[ignore]`, no disabling a test to make the gate green. `tests/h1_ready_in_flight.rs` is excluded because it tests Tokio's cooperative budget, not fork behavior; `ready_on_poll_stream` and `h1_flush_before_yield` cover the readiness path. The upstream `#[ignore]` tests stay ignored and are listed with their upstream reason; unignoring one is a separate finding.
+- **Exclusions are capped.** At most 10 tests per fork may be excluded, each with a reason and a named covering test in the ledger. No broad `#[ignore]`, no disabling a test to make the gate green. The Tokio-budget `h1_ready_in_flight` test was removed because it tests Tokio's cooperative budget, not fork behavior; `ready_on_poll_stream` and `h1_flush_before_yield` cover the readiness path. The upstream `#[ignore]` tests stay ignored and are listed with their upstream reason; unignoring one is a separate finding.
 - **The Tokio oracle is temporary.** `FVP-02` may run the upstream Tokio harness in a disposable worktree to record reference counts and outcomes. It is reverted before `FVP-03`; the final fork test graph contains no Tokio. Fork examples are out of scope: the gate uses `--tests` and `--lib`, so the Tokio examples are not ported in this campaign.
 - **Dependencies come from crates.io `laputa-*` 0.3.0**, not `../smolith` paths. CI has no smolith checkout for fork commands. [`SMOLITH_REV`](../SMOLITH_REV) is not changed.
 - **`crates/laputa-protocol-test-support` is dev-only.** `publish = false`; it is not a product crate and must not enter any normal dependency graph.
@@ -97,7 +98,7 @@ In the acceptance column: `H2` = `cargo test --manifest-path crates/laputa-h2-fu
 | `FVP-09` | H2 remainder | `tests/h2-tests/tests/{codec_read,informational_responses,prioritization,push_promise,trailers,hammer}.rs` | `FVP-04` | `H2 -p h2-tests --test codec_read --test informational_responses --test prioritization --test push_promise --test trailers --test hammer` passes 48 tests, or every exclusion is in the ledger with a covering test |
 | `FVP-10` | Hyper support port and pilot | `crates/laputa-hyper-futures-lite/tests/support/**`, `tests/h1_flush_before_yield.rs`, `h1_shutdown_while_buffered.rs`, `ready_on_poll_stream.rs`, `unbuffered_stream.rs` | `FVP-03` | `HYPER --test h1_flush_before_yield --test h1_shutdown_while_buffered --test ready_on_poll_stream --test unbuffered_stream` passes 4 tests |
 | `FVP-11` | Hyper integration tests | `tests/server.rs`, `tests/client.rs`, `tests/integration.rs` | `FVP-10` | `HYPER --test server --test client --test integration` passes; exclusions are in the ledger |
-| `FVP-12` | Hyper unit tests and dead harness removal | Hyper `src/**` test modules; delete `src/mock.rs` and `src/client/tests.rs` | `FVP-10` | `HYPER --lib` passes; the two dead files are gone; `rg` finds no references |
+| `FVP-12` | Hyper unit tests and dead harness removal | Hyper `src/**` test modules; remove the former Hyper mock and client test harness modules | `FVP-10` | `HYPER --lib` passes; the two dead files are gone; `rg` finds no references |
 | `FVP-13` | Close | `docs/fork-test-parity.md`, `docs/verification.md`, `.agents/skills/rebase-upstreams/SKILL.md`, `.github/workflows/ci.yml`, `scripts/verify-protocols.sh` | all | full gate, root suite, feature/dependency checks, ledger exact, no Tokio in fork normal or test graphs, `mdtool` clean |
 
 **Parallel pairs:** after `FVP-04`, `FVP-07` (H2) and `FVP-10` (Hyper) may run in parallel because they own disjoint crates and neither edits the shared support crate, the ledger, or the gate script. After `FVP-10`, `FVP-09` (H2 remainder) and `FVP-11` (Hyper integration) may run in parallel for the same reason. The parent integrates and updates the shared files. Any needed change to `crates/laputa-protocol-test-support` is a serial foundation change, not a lane edit.
@@ -159,14 +160,14 @@ This campaign does not modify the H12T-12 RFC, the root production crates, fork 
 **Measured code and documentation:**
 
 - H2 ordering gate: `crates/laputa-h2-futures-lite/src/proto/connection.rs:218-240` (`poll_ready`), `:356-390` (`poll2` calls `poll_ready` before `poll_next`).
-- Manual-poll regression: `crates/laputa-h2-futures-lite/tests/flow_control_futures.rs:16-20,266-276` (`NoopWake`, `POLL_BUDGET`).
-- H2 Tokio harness: `crates/laputa-h2-futures-lite/tests/h2-support/src/mock.rs:10`, `tests/h2-support/Cargo.toml:18-19`, `tests/h2-tests/Cargo.toml:14`.
+- Wake-driven regression: `crates/laputa-h2-futures-lite/tests/flow_control_futures.rs` uses the shared executor and budgeted pipe.
+- H2 harness: `crates/laputa-h2-futures-lite/tests/h2-support` now runs on futures I/O and the shared mock.
 - H2 adaptation note: `crates/laputa-h2-futures-lite/tests/h2-tests/README.md`.
-- Hyper dead harness: `crates/laputa-hyper-futures-lite/src/mock.rs:1`, `src/client/tests.rs:1`.
-- Hyper Tokio harness: `crates/laputa-hyper-futures-lite/tests/support/mod.rs:12,23-25`, `tests/support/tokiort.rs`.
+- Hyper dead harness: the former Hyper mock and client test harness modules were removed at FVP-12.
+- Hyper harness: `crates/laputa-hyper-futures-lite/tests/support` now uses smol and the test-local futures-I/O adapter.
 - Fork exclusion: `Cargo.toml:22-26`.
-- Manual-only fork commands: `docs/verification.md:21-24,32-48`.
-- No fork CI step: `.github/workflows/ci.yml:50-54`.
+- Fork gate command: `scripts/verify-protocols.sh`.
+- Fork CI job: `.github/workflows/ci.yml` `protocol-forks`.
 - Version-only pin check: `scripts/check-smolith-pin.sh`.
 - Existing futures-I/O adapter for reference: `crates/h12tiny-core/src/io.rs:19-168` (`FuturesIo`, `HyperIo`).
 - H2 dogfood and cancellation under smol: `tests/dogfood_h2_prior.rs`, `tests/h2_lifecycle.rs`.
