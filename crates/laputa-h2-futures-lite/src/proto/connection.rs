@@ -382,30 +382,66 @@ where
                     "graceful GOAWAY should be NO_ERROR"
                 );
             }
-            ready!(self.poll_ready(cx))?;
 
-            match self
-                .inner
-                .as_dyn()
-                .recv_frame(ready!(Pin::new(&mut self.codec).poll_next(cx)?))?
-            {
-                ReceivedFrame::Settings(frame) => {
-                    self.inner.settings.recv_settings(
-                        frame,
-                        &mut self.codec,
-                        &mut self.inner.streams,
-                    )?;
-                }
-                ReceivedFrame::Refused(id) => {
-                    debug_assert!(self.inner.pending_refusal.is_none());
-                    self.inner.pending_refusal = Some(id);
-                }
-                ReceivedFrame::Continue => (),
-                ReceivedFrame::Done => {
-                    return Poll::Ready(Ok(()));
+            match self.poll_ready(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => {
+                    // A control frame cannot be buffered while the write side
+                    // is blocked. Keep reading so the peer can make progress;
+                    // stop only when no frame is ready.
+                    match ready!(self.poll_recv_frame(cx))? {
+                        Some(frame) => {
+                            if self.handle_received_frame(frame)? {
+                                return Poll::Ready(Ok(()));
+                            }
+                            continue;
+                        }
+                        None => return Poll::Ready(Ok(())),
+                    }
                 }
             }
+
+            match ready!(self.poll_recv_frame(cx))? {
+                Some(frame) => {
+                    if self.handle_received_frame(frame)? {
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+                None => return Poll::Ready(Ok(())),
+            }
         }
+    }
+
+    fn poll_recv_frame(&mut self, cx: &mut Context) -> Poll<Result<Option<ReceivedFrame>, Error>> {
+        match ready!(Pin::new(&mut self.codec).poll_next(cx)) {
+            Some(frame) => Poll::Ready(
+                self.inner
+                    .as_dyn()
+                    .recv_frame(Some(frame?))
+                    .map(Some),
+            ),
+            None => Poll::Ready(Ok(None)),
+        }
+    }
+
+    fn handle_received_frame(&mut self, frame: ReceivedFrame) -> Result<bool, Error> {
+        match frame {
+            ReceivedFrame::Settings(frame) => {
+                self.inner.settings.recv_settings(
+                    frame,
+                    &mut self.codec,
+                    &mut self.inner.streams,
+                )?;
+            }
+            ReceivedFrame::Refused(id) => {
+                debug_assert!(self.inner.pending_refusal.is_none());
+                self.inner.pending_refusal = Some(id);
+            }
+            ReceivedFrame::Continue => (),
+            ReceivedFrame::Done => return Ok(true),
+        }
+        Ok(false)
     }
 
     fn clear_expired_reset_streams(&mut self) {

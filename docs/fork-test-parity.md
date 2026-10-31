@@ -45,7 +45,7 @@ Exclusion reasons:
 
 | Fork | Suite | Source file | Reference count | Ported | Excluded | Status | Command | Covering test |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| h2 | h2#975 bidirectional deadlock | `tests/h2-tests/tests/h2_975.rs` | 1 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test h2_975` | self |
+| h2 | h2#975 bidirectional deadlock | `tests/h2-tests/tests/h2_975.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test h2_975` | self |
 | shared | wake loss detection | `crates/laputa-protocol-test-support` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-protocol-test-support/Cargo.toml wake_loss_is_detected` | self |
 
 ## Reference inventory
@@ -80,6 +80,24 @@ On 2026-10-31, removing the reader wake from `BudgetPipe::poll_write` made
 `Stall { stats: Stats { polls: 2, wakes: 1 }, limit: 2s }` in 2.00 s instead
 of spinning. The patch was reverted. `wake_loss_is_detected` in the shared
 crate gates the same executor behavior without a patched dependency.
+
+### h2#975 regression
+
+The gated regression is `pending_control_writes_do_not_stop_reading` in
+`tests/h2-tests/tests/h2_975.rs`. It runs two client connections over the
+scripted mock codec with a 1 KiB write budget. Each connection queues 64 KiB of
+request DATA, fills the peer write budget, then receives a response HEADERS,
+a peer PING, and 8 KiB of DATA. One connection also queues a user PING. The app
+reads the response DATA, the peer restores write capacity, and the test waits
+for PONG (and the user PING) before closing the peer. It asserts completion,
+not a wall-clock threshold.
+
+On the unfixed `poll2` ordering the test fails with
+`Stall { polls: 4, wakes: 3, limit: 2s }`: the connection reads the PING,
+queues PONG, and stops reading the DATA behind it. After the fix (read while a
+control-frame write is pending) the test passed 20 consecutive runs and the
+12-run scripted soak passed 12/12. The non-gating TLS corroboration
+(`sh scripts/h2-975-soak.sh --tls`) passed 12/12 against the local fixture.
 
 ## Gate runs
 

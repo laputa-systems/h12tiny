@@ -9,5 +9,6 @@ edition = "2018"
 
 [dev-dependencies]
 h2-support = { path = "../h2-support" }
+laputa-protocol-test-support = { path = "../../../laputa-protocol-test-support" }
 tracing = "0.1.13"
 futures = { version = "0.3", default-features = false }

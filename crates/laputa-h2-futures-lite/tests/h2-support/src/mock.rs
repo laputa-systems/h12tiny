@@ -284,6 +284,19 @@ impl Handle {
             task.wake();
         }
     }
+
+    pub fn set_write_capacity(&mut self, capacity: usize) {
+        let mut inner = self.codec.get_mut().inner.lock().unwrap();
+        inner.tx_rem = capacity;
+
+        if let Some(task) = inner.tx_rem_task.take() {
+            task.wake();
+        }
+    }
+
+    pub fn write_capacity(&self) -> usize {
+        self.codec.get_ref().inner.lock().unwrap().tx_rem
+    }
 }
 
 impl Stream for Handle {

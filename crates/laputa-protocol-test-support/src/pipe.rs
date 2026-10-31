@@ -25,6 +25,7 @@ impl Buffer {
     }
 }
 
+#[derive(Clone)]
 pub struct BudgetPipe {
     incoming: Arc<Mutex<Buffer>>,
     outgoing: Arc<Mutex<Buffer>>,
