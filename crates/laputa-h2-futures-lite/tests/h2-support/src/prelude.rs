@@ -30,7 +30,7 @@ pub use super::assert::assert_frame_eq;
 // Re-export useful crates
 pub use laputa_protocol_test_support::mock_io;
 pub use {bytes, futures, http, tracing, tracing_subscriber};
-pub use laputa_protocol_test_support::{block_on, block_on_with_limit, timer};
+pub use laputa_protocol_test_support::{block_on, block_on_with_limit, timer, BudgetPipe};
 pub use smol;
 
 // Re-export primary future types

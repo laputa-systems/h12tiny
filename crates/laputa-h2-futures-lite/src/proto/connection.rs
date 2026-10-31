@@ -387,6 +387,9 @@ where
                 Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                 Poll::Pending => {
+                    if self.inner.pending_refusal.is_some() {
+                        return Poll::Pending;
+                    }
                     // A control frame cannot be buffered while the write side
                     // is blocked. Keep reading so the peer can make progress;
                     // stop only when no frame is ready.

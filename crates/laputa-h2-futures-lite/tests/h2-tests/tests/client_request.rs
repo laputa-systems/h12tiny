@@ -6,8 +6,9 @@ use std::pin::Pin;
 use std::task::Context;
 use std::{io, panic};
 
-#[tokio::test]
-async fn handshake() {
+#[test]
+fn handshake() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -21,10 +22,12 @@ async fn handshake() {
 
     // At this point, the connection should be closed
     h2.await.unwrap();
+    });
 }
 
-#[tokio::test]
-async fn client_other_thread() {
+#[test]
+fn client_other_thread() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -42,7 +45,7 @@ async fn client_other_thread() {
 
     let h2 = async move {
         let (mut client, h2) = client::handshake(io).await.unwrap();
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let request = Request::builder()
                 .uri("https://http2.akamai.com/")
                 .body(())
@@ -53,14 +56,16 @@ async fn client_other_thread() {
                 .0
                 .await
                 .expect("request");
-        });
+        }).detach();
         h2.await.expect("h2");
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_invalid_server_stream_id() {
+#[test]
+fn recv_invalid_server_stream_id() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let mock = mock_io::Builder::new()
@@ -93,10 +98,12 @@ async fn recv_invalid_server_stream_id() {
 
     // The stream errors
     assert!(response.await.is_err());
+    });
 }
 
-#[tokio::test]
-async fn request_stream_id_overflows() {
+#[test]
+fn request_stream_id_overflows() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -146,10 +153,12 @@ async fn request_stream_id_overflows() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn client_builder_max_concurrent_streams() {
+#[test]
+fn client_builder_max_concurrent_streams() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -184,10 +193,12 @@ async fn client_builder_max_concurrent_streams() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn request_over_max_concurrent_streams_errors() {
+#[test]
+fn request_over_max_concurrent_streams_errors() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -285,10 +296,12 @@ async fn request_over_max_concurrent_streams_errors() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_decrement_max_concurrent_streams_when_requests_queued() {
+#[test]
+fn recv_decrement_max_concurrent_streams_when_requests_queued() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -369,10 +382,12 @@ async fn recv_decrement_max_concurrent_streams_when_requests_queued() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn send_request_poll_ready_when_connection_error() {
+#[test]
+fn send_request_poll_ready_when_connection_error() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -464,10 +479,12 @@ async fn send_request_poll_ready_when_connection_error() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn send_reset_notifies_recv_stream() {
+#[test]
+fn send_reset_notifies_recv_stream() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -521,10 +538,12 @@ async fn send_reset_notifies_recv_stream() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn http_11_request_without_scheme_or_authority() {
+#[test]
+fn http_11_request_without_scheme_or_authority() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -551,10 +570,12 @@ async fn http_11_request_without_scheme_or_authority() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn http_2_request_without_scheme_or_authority() {
+#[test]
+fn http_2_request_without_scheme_or_authority() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -583,10 +604,12 @@ async fn http_2_request_without_scheme_or_authority() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn http_2_connect_request_omit_scheme_and_path_fields() {
+#[test]
+fn http_2_connect_request_omit_scheme_and_path_fields() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -622,14 +645,16 @@ async fn http_2_connect_request_omit_scheme_and_path_fields() {
     };
 
     join(srv, h2).await;
+    });
 }
 
 #[test]
 #[ignore]
 fn request_with_h1_version() {}
 
-#[tokio::test]
-async fn request_with_connection_headers() {
+#[test]
+fn request_with_connection_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -669,10 +694,12 @@ async fn request_with_connection_headers() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn connection_close_notifies_response_future() {
+#[test]
+fn connection_close_notifies_response_future() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
     let srv = async move {
@@ -708,10 +735,12 @@ async fn connection_close_notifies_response_future() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn connection_close_notifies_client_poll_ready() {
+#[test]
+fn connection_close_notifies_client_poll_ready() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -744,7 +773,8 @@ async fn connection_close_notifies_client_poll_ready() {
             assert_eq!(err.to_string(), "stream closed because of a broken pipe");
         };
 
-        conn.drive(req).await;
+        let (connection, ()) = futures::future::join(conn, req).await;
+        connection.expect("client");
 
         let err = poll_fn(move |cx| client.poll_ready(cx))
             .await
@@ -756,10 +786,12 @@ async fn connection_close_notifies_client_poll_ready() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn sending_request_on_closed_connection() {
+#[test]
+fn sending_request_on_closed_connection() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -818,10 +850,12 @@ async fn sending_request_on_closed_connection() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn response_missing_status() {
+#[test]
+fn response_missing_status() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -884,13 +918,15 @@ async fn response_missing_status() {
         assert_eq!(conn.drive(response).await.unwrap().status(), 204);
     };
 
-    tokio::time::timeout(std::time::Duration::from_secs(5), join(srv, client))
+    timer::timeout(std::time::Duration::from_secs(5), join(srv, client))
         .await
         .expect("response_missing_status timed out");
+    });
 }
 
-#[tokio::test]
-async fn recv_too_big_headers() {
+#[test]
+fn recv_too_big_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -952,10 +988,12 @@ async fn recv_too_big_headers() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn pending_send_request_gets_reset_by_peer_properly() {
+#[test]
+fn pending_send_request_gets_reset_by_peer_properly() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1024,10 +1062,12 @@ async fn pending_send_request_gets_reset_by_peer_properly() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn request_without_path() {
+#[test]
+fn request_without_path() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1055,10 +1095,12 @@ async fn request_without_path() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn request_options_with_star() {
+#[test]
+fn request_options_with_star() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1095,14 +1137,16 @@ async fn request_options_with_star() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn notify_on_send_capacity() {
+#[test]
+fn notify_on_send_capacity() {
+    h2_support::run(async {
     // This test ensures that the client gets notified when there is additional
     // send capacity. In other words, when the server is ready to accept a new
     // stream, the client is notified.
-    use tokio::sync::oneshot;
+    use futures::channel::oneshot;
 
     h2_support::trace_init!();
 
@@ -1146,7 +1190,7 @@ async fn notify_on_send_capacity() {
 
     let client = async move {
         let (mut client, conn) = client::handshake(io).await.expect("handshake");
-        tokio::spawn(async move {
+        smol::spawn(async move {
             rx.await.unwrap();
 
             let mut responses = vec![];
@@ -1174,16 +1218,18 @@ async fn notify_on_send_capacity() {
             poll_fn(|cx| client.poll_ready(cx)).await.unwrap();
 
             done_tx.send(()).unwrap();
-        });
+        }).detach();
 
         conn.await.expect("h2");
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn send_stream_poll_reset() {
+#[test]
+fn send_stream_poll_reset() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1215,13 +1261,15 @@ async fn send_stream_poll_reset() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn drop_pending_open() {
+#[test]
+fn drop_pending_open() {
+    h2_support::run(async {
     // This test checks that a stream queued for pending open behaves correctly when its
     // client drops.
-    use tokio::sync::oneshot;
+    use futures::channel::oneshot;
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -1302,14 +1350,16 @@ async fn drop_pending_open() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn malformed_response_headers_dont_unlink_stream() {
+#[test]
+fn malformed_response_headers_dont_unlink_stream() {
+    h2_support::run(async {
     // This test checks that receiving malformed headers frame on a stream with
     // no remaining references correctly resets the stream, without prematurely
     // unlinking it.
-    use tokio::sync::oneshot;
+    use futures::channel::oneshot;
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -1374,10 +1424,12 @@ async fn malformed_response_headers_dont_unlink_stream() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn allow_empty_data_for_head() {
+#[test]
+fn allow_empty_data_for_head() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1404,9 +1456,9 @@ async fn allow_empty_data_for_head() {
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
-        tokio::spawn(async {
+        smol::spawn(async {
             h2.await.expect("connection failed");
-        });
+        }).detach();
         let request = Request::builder()
             .method(Method::HEAD)
             .uri("https://example.com/")
@@ -1418,10 +1470,12 @@ async fn allow_empty_data_for_head() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn reject_none_zero_content_length_header_with_end_stream() {
+#[test]
+fn reject_none_zero_content_length_header_with_end_stream() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1448,9 +1502,9 @@ async fn reject_none_zero_content_length_header_with_end_stream() {
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
-        tokio::spawn(async {
+        smol::spawn(async {
             h2.await.expect("connection failed");
-        });
+        }).detach();
         let request = Request::builder()
             .method(Method::GET)
             .uri("https://example.com/")
@@ -1461,10 +1515,12 @@ async fn reject_none_zero_content_length_header_with_end_stream() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn validate_multiple_content_length_headers() {
+#[test]
+fn validate_multiple_content_length_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     for method in &["GET", "HEAD"] {
@@ -1500,7 +1556,7 @@ async fn validate_multiple_content_length_headers() {
             };
             let h2 = async move {
                 let (mut client, conn) = client::handshake(io).await.unwrap();
-                tokio::spawn(async move { conn.await.expect("connection failed") });
+                smol::spawn(async move { conn.await.expect("connection failed") }).detach();
                 let request = Request::builder()
                     .method(*method)
                     .uri("https://example.com/")
@@ -1522,10 +1578,12 @@ async fn validate_multiple_content_length_headers() {
             join(srv, h2).await;
         }
     }
+    });
 }
 
-#[tokio::test]
-async fn early_hints() {
+#[test]
+fn early_hints() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1549,9 +1607,9 @@ async fn early_hints() {
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
-        tokio::spawn(async {
+        smol::spawn(async {
             h2.await.expect("connection failed");
-        });
+        }).detach();
         let request = Request::builder()
             .method(Method::GET)
             .uri("https://example.com/")
@@ -1564,10 +1622,12 @@ async fn early_hints() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn informational_while_local_streaming() {
+#[test]
+fn informational_while_local_streaming() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1588,9 +1648,9 @@ async fn informational_while_local_streaming() {
             .handshake::<_, Bytes>(io)
             .await
             .unwrap();
-        tokio::spawn(async {
+        smol::spawn(async {
             h2.await.expect("connection failed");
-        });
+        }).detach();
         let request = Request::builder()
             .method(Method::POST)
             .uri("https://example.com/")
@@ -1608,10 +1668,12 @@ async fn informational_while_local_streaming() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn extended_connect_protocol_disabled_by_default() {
+#[test]
+fn extended_connect_protocol_disabled_by_default() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1642,10 +1704,12 @@ async fn extended_connect_protocol_disabled_by_default() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn extended_connect_protocol_enabled_during_handshake() {
+#[test]
+fn extended_connect_protocol_enabled_during_handshake() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1677,10 +1741,12 @@ async fn extended_connect_protocol_enabled_during_handshake() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn invalid_connect_protocol_enabled_setting() {
+#[test]
+fn invalid_connect_protocol_enabled_setting() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -1719,10 +1785,12 @@ async fn invalid_connect_protocol_enabled_setting() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn extended_connect_request() {
+#[test]
+fn extended_connect_request() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     let (io, mut srv) = mock::new();
@@ -1761,10 +1829,12 @@ async fn extended_connect_request() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn rogue_server_odd_headers() {
+#[test]
+fn rogue_server_odd_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1784,10 +1854,12 @@ async fn rogue_server_odd_headers() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn rogue_server_even_headers() {
+#[test]
+fn rogue_server_even_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1807,10 +1879,12 @@ async fn rogue_server_even_headers() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn rogue_server_reused_headers() {
+#[test]
+fn rogue_server_reused_headers() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1846,10 +1920,12 @@ async fn rogue_server_reused_headers() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn client_builder_header_table_size() {
+#[test]
+fn client_builder_header_table_size() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
     let mut settings = frame::Settings::default();
@@ -1880,10 +1956,12 @@ async fn client_builder_header_table_size() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn configured_max_concurrent_send_streams_and_update_it_based_on_empty_settings_frame() {
+#[test]
+fn configured_max_concurrent_send_streams_and_update_it_based_on_empty_settings_frame() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1910,10 +1988,12 @@ async fn configured_max_concurrent_send_streams_and_update_it_based_on_empty_set
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn configured_max_concurrent_send_streams_and_update_it_based_on_non_empty_settings_frame() {
+#[test]
+fn configured_max_concurrent_send_streams_and_update_it_based_on_non_empty_settings_frame() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1941,10 +2021,12 @@ async fn configured_max_concurrent_send_streams_and_update_it_based_on_non_empty
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn receive_settings_frame_twice_with_second_one_empty() {
+#[test]
+fn receive_settings_frame_twice_with_second_one_empty() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -1991,10 +2073,12 @@ async fn receive_settings_frame_twice_with_second_one_empty() {
     };
 
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn receive_settings_frame_twice_with_second_one_non_empty() {
+#[test]
+fn receive_settings_frame_twice_with_second_one_non_empty() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2041,12 +2125,14 @@ async fn receive_settings_frame_twice_with_second_one_non_empty() {
     };
 
     join(srv, h2).await;
+    });
 }
 
 // If the server has not sent a go_away message before dropping the connection
 // make sure the UnexpectedEof error is propogated.
-#[tokio::test]
-async fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
+#[test]
+fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2064,7 +2150,7 @@ async fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
 
     let h2 = async move {
         let (mut client, h2) = client::handshake(io).await.unwrap();
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let request = Request::builder()
                 .uri("https://http2.akamai.com/")
                 .body(())
@@ -2075,7 +2161,7 @@ async fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
                 .0
                 .await
                 .expect("request");
-        });
+        }).detach();
         let err = h2.await.expect_err("should receive UnexpectedEof");
         assert_eq!(
             err.get_io().expect("should be UnexpectedEof").kind(),
@@ -2083,10 +2169,12 @@ async fn server_drop_connection_unexpectedly_return_unexpected_eof_err() {
         );
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn server_drop_connection_after_go_away() {
+#[test]
+fn server_drop_connection_after_go_away() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -2100,13 +2188,13 @@ async fn server_drop_connection_after_go_away() {
         )
         .await;
         srv.send_frame(frames::go_away(1)).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        smol::Timer::after(Duration::from_millis(50)).await;
         srv.close_without_notify();
     };
 
     let h2 = async move {
         let (mut client, h2) = client::handshake(io).await.unwrap();
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let request = Request::builder()
                 .uri("https://http2.akamai.com/")
                 .body(())
@@ -2117,14 +2205,16 @@ async fn server_drop_connection_after_go_away() {
                 .0
                 .await
                 .expect("request");
-        });
+        }).detach();
         let _ = h2.await.unwrap();
     };
     join(srv, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn reset_before_headers_reaches_peer_without_headers() {
+#[test]
+fn reset_before_headers_reaches_peer_without_headers() {
+    h2_support::run(async {
     // Repro: body future errors immediately and hyper/h2 converts that into a
     // RST_STREAM before the queued HEADERS are ever written, so the peer sees
     // a reset for an idle stream and treats it as a PROTOCOL_ERROR.
@@ -2138,7 +2228,7 @@ async fn reset_before_headers_reaches_peer_without_headers() {
         let settings = srv.assert_client_handshake().await;
         assert_default_settings!(settings);
 
-        let frame = tokio::time::timeout(Duration::from_secs(1), srv.next())
+        let frame = timer::timeout(Duration::from_secs(1), srv.next())
             .await
             .expect("timed out waiting for first frame")
             .expect("unexpected EOF")
@@ -2175,18 +2265,19 @@ async fn reset_before_headers_reaches_peer_without_headers() {
         send_stream.send_reset(Reason::INTERNAL_ERROR);
 
         // Now start driving the connection so the queued frames get written.
-        let conn_task = tokio::spawn(async move {
+        let conn_task = smol::spawn(async move {
             let _ = conn.await;
         });
 
         // Give the connection a moment to flush frames.
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        smol::Timer::after(Duration::from_millis(10)).await;
 
         drop(send_stream);
         let _ = conn_task.await;
     };
 
     join(srv, client).await;
+    });
 }
 
 const SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
@@ -2209,8 +2300,9 @@ impl MockH2 for mock_io::Builder {
 /// RFC 9113 S5.1: "Receiving any frame other than HEADERS or PRIORITY on a
 /// stream in [idle] state MUST be treated as a connection error of type
 /// PROTOCOL_ERROR."
-#[tokio::test]
-async fn frame_on_pending_open_stream_is_conn_error() {
+#[test]
+fn frame_on_pending_open_stream_is_conn_error() {
+    h2_support::run(async {
     h2_support::trace_init!();
 
     for scenario in 0..5u8 {
@@ -2285,4 +2377,5 @@ async fn frame_on_pending_open_stream_is_conn_error() {
 
         join(srv, client).await;
     }
+    });
 }

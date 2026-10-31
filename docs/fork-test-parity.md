@@ -16,8 +16,8 @@ flow-control exchange) are separate rows and do not inflate inherited counts.
 | h2 | h2-tests codec_write | `tests/h2-tests/tests/codec_write.rs` | 4 | 4 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test codec_write` | - |
 | h2 | h2-tests flow_control | `tests/h2-tests/tests/flow_control.rs` | 52 | 52 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test flow_control` | - |
 | h2 | h2-tests stream_states | `tests/h2-tests/tests/stream_states.rs` | 36 | 36 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test stream_states` | - |
-| h2 | h2-tests server | `tests/h2-tests/tests/server.rs` | 46 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test server` | - |
-| h2 | h2-tests client_request | `tests/h2-tests/tests/client_request.rs` | 47 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test client_request` | - |
+| h2 | h2-tests server | `tests/h2-tests/tests/server.rs` | 46 | 46 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test server` | - |
+| h2 | h2-tests client_request | `tests/h2-tests/tests/client_request.rs` | 47 | 47 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test client_request` | - |
 | h2 | h2-tests codec_read | `tests/h2-tests/tests/codec_read.rs` | 15 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test codec_read` | - |
 | h2 | h2-tests informational_responses | `tests/h2-tests/tests/informational_responses.rs` | 7 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test informational_responses` | - |
 | h2 | h2-tests prioritization | `tests/h2-tests/tests/prioritization.rs` | 7 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test prioritization` | - |
