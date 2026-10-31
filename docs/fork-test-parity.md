@@ -24,7 +24,7 @@ flow-control exchange) are separate rows and do not inflate inherited counts.
 | h2 | h2-tests push_promise | `tests/h2-tests/tests/push_promise.rs` | 13 | 13 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test push_promise` | self |
 | h2 | h2-tests trailers | `tests/h2-tests/tests/trailers.rs` | 5 | 5 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test trailers` | self |
 | h2 | h2-tests hammer | `tests/h2-tests/tests/hammer.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test hammer` | self |
-| hyper | library | `src/**/*.rs` | 133 | 129 | 4 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --lib` | `client_flushing_is_not_ready_for_next_request` |
+| hyper | library | `src/**/*.rs` | 135 | 131 | 4 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --lib` | `client_flushing_is_not_ready_for_next_request` |
 | hyper | h1_flush_before_yield | `tests/h1_flush_before_yield.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test h1_flush_before_yield` | - |
 | hyper | h1_shutdown_while_buffered | `tests/h1_shutdown_while_buffered.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test h1_shutdown_while_buffered` | - |
 | hyper | ready_on_poll_stream | `tests/ready_on_poll_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test ready_on_poll_stream` | - |
@@ -106,6 +106,8 @@ The fork corpus is the ledger denominator when it differs from upstream:
 - `stream_states.rs` adds `recv_end_stream_survives_go_away` and
   `recv_end_stream_survives_eof` (36 versus 34).
 - The fork library has 447 tests versus 445 upstream.
+- The Hyper library has 135 tests versus 133 upstream; `common/io/compat`
+  adds shutdown normalization regressions.
 - Every other inherited h2 test file and every inherited Hyper test file is
   byte-identical to the reference release.
 
