@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use async_net::{TcpListener, TcpStream};
-use futures_lite::io::AsyncWriteExt;
+use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use futures_util::future::{self, Either};
 use h12tiny::io::FuturesIo;
 use h12tiny::runtime::BoxExecutor;
@@ -64,6 +64,48 @@ async fn server_rejects(bytes: &'static [u8]) -> bool {
     }
 }
 
+async fn server_status_line(bytes: &'static [u8]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let _server = smol::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        auto::Builder::new(BoxExecutor::new(SmolExecutor))
+            .http1_only()
+            .serve_connection(FuturesIo::new(stream), DrainService)
+            .await
+    });
+    let mut client = TcpStream::connect(address).await.unwrap();
+    client.write_all(bytes).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    let read = async {
+        while !head.ends_with(b"\r\n\r\n") {
+            if client.read(&mut byte).await.unwrap() == 0 {
+                break;
+            }
+            head.push(byte[0]);
+        }
+    };
+    future::select(
+        Box::pin(read),
+        Box::pin(async_io::Timer::after(Duration::from_secs(5))),
+    )
+    .await;
+    String::from_utf8_lossy(&head)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn hyper_h1_serves_bare_lf_request_like_upstream_hyper() {
+    smol::block_on(async {
+        let status = server_status_line(b"GET / HTTP/1.1\nHost: test\n\n").await;
+        assert_eq!(status, "HTTP/1.1 200 OK");
+    });
+}
+
 #[test]
 fn hyper_h1_rejects_ambiguous_or_malformed_raw_framing() {
     smol::block_on(async {
@@ -94,10 +136,6 @@ fn hyper_h1_rejects_ambiguous_or_malformed_raw_framing() {
             (
                 "truncated_chunk",
                 b"POST / HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nab".as_slice(),
-            ),
-            (
-                "bare_lf",
-                b"GET / HTTP/1.1\nHost: test\n\n".as_slice(),
             ),
             (
                 "whitespace_before_colon",
