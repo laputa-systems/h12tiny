@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use http_body_util::StreamBody;
 use hyper::body::Bytes;
 use hyper::body::Frame;
@@ -6,8 +7,8 @@ use hyper::service::service_fn;
 use hyper::{Response, StatusCode};
 use std::convert::Infallible;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
+use futures_channel::mpsc;
+use laputa_protocol_test_support::timer::timeout;
 use tracing::{error, info};
 
 pub struct TestConfig {
@@ -70,7 +71,7 @@ where
         }
     });
 
-    let server_task = tokio::spawn(async move {
+    let server_task = smol::spawn(async move {
         let conn = http_builder.serve_connection(Box::pin(server), service);
         let conn_result = conn.await;
         if let Err(e) = &conn_result {
@@ -82,7 +83,7 @@ where
     let get_request = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
     client
         .tx
-        .send(get_request.as_bytes().to_vec())
+        .unbounded_send(get_request.as_bytes().to_vec())
         .map_err(|e| {
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -95,13 +96,13 @@ where
     let mut bytes_received = 0;
     let mut all_data = Vec::new();
     loop {
-        match timeout(config.chunk_timeout, client.rx.recv()).await {
-            Ok(Some(chunk)) => {
+        match timeout(config.chunk_timeout, client.rx.next()).await {
+            Some(Some(chunk)) => {
                 bytes_received += chunk.len();
                 all_data.extend_from_slice(&chunk);
             }
-            Ok(None) => break,
-            Err(_) => {
+            Some(None) => break,
+            None => {
                 panic!(
                     "Chunk timeout: chunk took longer than {:?}",
                     config.chunk_timeout
@@ -111,8 +112,7 @@ where
     }
 
     // Clean up
-    let result = server_task.await.unwrap();
-    result.unwrap();
+    let _ = server_task.await;
 
     // Parse HTTP response to find body start
     // HTTP response format: "HTTP/1.1 200 OK\r\n...headers...\r\n\r\n<body>"

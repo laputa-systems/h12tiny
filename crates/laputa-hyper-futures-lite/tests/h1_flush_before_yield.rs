@@ -26,10 +26,10 @@ use hyper::body::{Body, Frame};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::Response;
-use support::TokioIo;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::time::timeout;
+use laputa_protocol_test_support::timer::timeout;
+use smol::io::{AsyncReadExt, AsyncWriteExt};
+use smol::net::{TcpListener, TcpStream};
+use support::FuturesIo;
 
 mod support;
 
@@ -61,20 +61,22 @@ impl Body for PendOnceThenEnd {
     }
 }
 
-#[tokio::test]
-async fn h1_server_flushes_end_of_body_buffered_by_write_recheck() {
+#[test]
+fn h1_server_flushes_end_of_body_buffered_by_write_recheck() {
+    smol::block_on(async {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let service = service_fn(|_req| async {
             Ok::<_, Infallible>(Response::new(PendOnceThenEnd::default()))
         });
         let _ = http1::Builder::new()
-            .serve_connection(TokioIo::new(socket), service)
+            .serve_connection(FuturesIo::new(socket), service)
             .await;
-    });
+    })
+    .detach();
 
     let mut client = TcpStream::connect(addr).await.unwrap();
     client
@@ -102,7 +104,7 @@ async fn h1_server_flushes_end_of_body_buffered_by_write_recheck() {
     .await;
 
     assert!(
-        read.is_ok(),
+        read.is_some(),
         "response never completed; got {:?}",
         String::from_utf8_lossy(&received)
     );
@@ -115,4 +117,5 @@ async fn h1_server_flushes_end_of_body_buffered_by_write_recheck() {
         received.contains("hello"),
         "missing body content; got {received:?}"
     );
+    });
 }

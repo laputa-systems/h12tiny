@@ -23,12 +23,10 @@ use bytes::Bytes;
 use http::{Request, Response};
 use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn};
-use support::TokioIo;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::{TcpListener, TcpStream},
-    time::{sleep, timeout},
-};
+use futures_io::{AsyncRead, AsyncWrite};
+use laputa_protocol_test_support::timer::{sleep, timeout};
+use smol::net::{TcpListener, TcpStream};
+use support::FuturesIo;
 mod support;
 
 #[derive(Debug, Default)]
@@ -69,8 +67,8 @@ impl AsyncRead for PendingStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
@@ -102,7 +100,7 @@ impl AsyncWrite for PendingStream {
         Poll::Pending
     }
 
-    fn poll_shutdown(
+    fn poll_close(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::io::Result<()>> {
@@ -118,7 +116,7 @@ impl AsyncWrite for PendingStream {
             stats.buffered_at_shutdown = buffered;
         }
         drop(stats);
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        Pin::new(&mut self.inner).poll_close(cx)
     }
 
     fn poll_flush(
@@ -139,17 +137,18 @@ impl AsyncWrite for PendingStream {
 
 // Test doesn't necessarily check that the connections ended successfully but mainly that shutdown
 // wasn't called with data still remaining within hyper's internal buffer
-#[tokio::test]
-async fn test_no_premature_shutdown_while_buffered() {
+#[test]
+fn test_no_premature_shutdown_while_buffered() {
+    smol::block_on(async {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let stats = Arc::new(Mutex::new(PendingStreamStatistics::default()));
 
     let stats_clone = stats.clone();
-    let server = tokio::spawn(async move {
+    let server = smol::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let pending_stream = PendingStream::new(stream, 212_992, stats_clone);
-        let io = TokioIo::new(pending_stream);
+        let io = FuturesIo::new(pending_stream);
 
         let service = service_fn(|_req: Request<Incoming>| async move {
             // Larger Full response than write_chunk_size
@@ -166,10 +165,10 @@ async fn test_no_premature_shutdown_while_buffered() {
     sleep(Duration::from_millis(50)).await;
 
     // Client sends request
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let mut stream = TcpStream::connect(addr).await.unwrap();
 
-        use tokio::io::AsyncWriteExt;
+        use smol::io::AsyncWriteExt;
 
         stream
             .write_all(
@@ -187,7 +186,8 @@ async fn test_no_premature_shutdown_while_buffered() {
 
         // keep connection open
         sleep(Duration::from_secs(2)).await;
-    });
+    })
+    .detach();
 
     // Wait for completion
     let result = timeout(Duration::from_millis(900), server).await;
@@ -199,7 +199,7 @@ async fn test_no_premature_shutdown_while_buffered() {
         "shutdown() called with {} bytes still buffered (wrote {} of {} bytes)",
         stats.buffered_at_shutdown, stats.bytes_written, stats.total_attempted
     );
-    if let Ok(Ok(conn_result)) = result {
-        conn_result.ok();
+    if let Some(Ok(())) = result {
     }
+    });
 }

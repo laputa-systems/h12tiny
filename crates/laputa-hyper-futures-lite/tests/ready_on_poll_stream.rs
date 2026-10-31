@@ -9,8 +9,8 @@ use std::io;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::time::Sleep;
+use futures_channel::mpsc;
+use smol::Timer;
 use tracing::error;
 
 pin_project! {
@@ -20,7 +20,7 @@ pin_project! {
         read_half: StreamReadHalf,
         write_tx: mpsc::UnboundedSender<Vec<u8>>,
         #[pin]
-        pending_write: Option<Pin<Box<Sleep>>>,
+        pending_write: Option<Pin<Box<Timer>>>,
         poll_since_write: bool,
         flush_count: usize,
     }
@@ -43,8 +43,8 @@ impl ReadyOnPollStream {
     /// Create a new server stream and client pair.
     /// Returns a server stream (Read+Write) and a client (rx/tx channels).
     pub fn new_pair() -> (Self, fixture::Client) {
-        let (client_tx, server_rx) = mpsc::unbounded_channel();
-        let (server_tx, client_rx) = mpsc::unbounded_channel();
+        let (client_tx, server_rx) = mpsc::unbounded();
+        let (server_tx, client_rx) = mpsc::unbounded();
         let server = Self::new(server_rx, server_tx);
         let client = fixture::Client {
             rx: client_rx,
@@ -79,7 +79,7 @@ impl Write for ReadyOnPollStream {
         {
             let mut this = self.as_mut().project();
             this.pending_write
-                .set(Some(Box::pin(tokio::time::sleep(WRITE_DELAY))));
+                .set(Some(Box::pin(smol::Timer::after(WRITE_DELAY))));
         }
         let Some(sleep) = self.pending_write.as_mut() else {
             panic!("Sleep should have just been set");
@@ -95,7 +95,7 @@ impl Write for ReadyOnPollStream {
         let len = buf.len();
 
         // Send data through the channel - this should always be ready for unbounded channels
-        match this.write_tx.send(buf) {
+        match this.write_tx.unbounded_send(buf) {
             Ok(_) => Poll::Ready(Ok(len)),
             Err(_) => {
                 error!("ReadyStream::poll_write failed - channel closed");
@@ -135,10 +135,12 @@ impl Write for ReadyOnPollStream {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn body_test() {
+#[test]
+fn body_test() {
+    smol::block_on(async {
     init_tracing();
     let (server, client) = ReadyOnPollStream::new_pair();
     let config = fixture::TestConfig::with_timeout(WRITE_DELAY * 2);
     fixture::run(server, client, config).await;
+    });
 }

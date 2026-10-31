@@ -1,17 +1,15 @@
 pub mod fixture;
 
+use futures_channel::mpsc;
 use hyper::rt::{Read, ReadBufCursor};
 use pin_project_lite::pin_project;
 use std::io;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
-use tokio::sync::mpsc;
 
-// Common read half shared by both stream types
 pin_project! {
     #[derive(Debug)]
     pub struct StreamReadHalf {
-        #[pin]
         read_rx: mpsc::UnboundedReceiver<Vec<u8>>,
         read_buffer: Vec<u8>,
     }
@@ -32,40 +30,32 @@ impl Read for StreamReadHalf {
         cx: &mut Context<'_>,
         mut buf: ReadBufCursor<'_>,
     ) -> Poll<io::Result<()>> {
-        let mut this = self.as_mut().project();
+        let this = self.as_mut().project();
 
-        // First, try to satisfy the read request from the internal buffer
         if !this.read_buffer.is_empty() {
             let to_read = std::cmp::min(this.read_buffer.len(), buf.remaining());
-            // Copy data from internal buffer to the read buffer
             buf.put_slice(&this.read_buffer[..to_read]);
-            // Remove the consumed data from the internal buffer
             this.read_buffer.drain(..to_read);
             return Poll::Ready(Ok(()));
         }
 
-        // If internal buffer is empty, try to get data from the channel
-        match this.read_rx.as_mut().get_mut().try_recv() {
+        match this.read_rx.try_recv() {
             Ok(data) => {
-                // Copy as much data as we can fit in the buffer
                 let to_read = std::cmp::min(data.len(), buf.remaining());
                 buf.put_slice(&data[..to_read]);
 
-                // Store any remaining data in the internal buffer for next time
                 if to_read < data.len() {
                     let remaining = &data[to_read..];
                     this.read_buffer.extend_from_slice(remaining);
                 }
                 Poll::Ready(Ok(()))
             }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                match ready!(this.read_rx.poll_recv(cx)) {
+            Err(mpsc::TryRecvError::Empty) => {
+                match ready!(futures_util::Stream::poll_next(Pin::new(this.read_rx), cx)) {
                     Some(data) => {
-                        // Copy as much data as we can fit in the buffer
                         let to_read = std::cmp::min(data.len(), buf.remaining());
                         buf.put_slice(&data[..to_read]);
 
-                        // Store any remaining data in the internal buffer for next time
                         if to_read < data.len() {
                             let remaining = &data[to_read..];
                             this.read_buffer.extend_from_slice(remaining);
@@ -75,10 +65,7 @@ impl Read for StreamReadHalf {
                     None => Poll::Ready(Ok(())),
                 }
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                // Channel closed, return EOF
-                Poll::Ready(Ok(()))
-            }
+            Err(mpsc::TryRecvError::Closed) => Poll::Ready(Ok(())),
         }
     }
 }

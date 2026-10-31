@@ -9,7 +9,7 @@ use std::sync::{
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::server;
-use tokio::net::{TcpListener, TcpStream};
+use smol::net::{TcpListener, TcpStream};
 
 use hyper::service::service_fn;
 use hyper::{body::Incoming as IncomingBody, Request, Response, Version};
@@ -20,9 +20,9 @@ pub use futures_util::{
 pub use hyper::HeaderMap;
 pub use std::net::SocketAddr;
 
-mod tokiort;
+mod io;
 #[allow(unused)]
-pub use tokiort::{TokioExecutor, TokioIo, TokioTimer};
+pub use io::{FuturesIo, SmolExecutor, SmolTimer};
 
 pub mod trailers;
 
@@ -315,16 +315,9 @@ pub struct __TestConfig {
     pub proxy: bool,
 }
 
-pub fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("new rt")
-}
-
 pub fn __run_test(cfg: __TestConfig) {
     let _ = pretty_env_logger::try_init();
-    runtime().block_on(async_test(cfg));
+    smol::block_on(async_test(cfg));
 }
 
 async fn async_test(cfg: __TestConfig) {
@@ -347,7 +340,7 @@ async fn async_test(cfg: __TestConfig) {
     let mut addr = listener.local_addr().unwrap();
 
     let expected_connections = cfg.connections;
-    tokio::task::spawn(async move {
+    smol::spawn(async move {
         let mut cnt = 0;
 
         cnt += 1;
@@ -360,7 +353,7 @@ async fn async_test(cfg: __TestConfig) {
 
         loop {
             let (stream, _) = listener.accept().await.expect("server error");
-            let io = TokioIo::new(stream);
+            let io = FuturesIo::new(stream);
 
             // Move a clone into the service_fn
             let serve_handles = serve_handles.clone();
@@ -387,9 +380,9 @@ async fn async_test(cfg: __TestConfig) {
                 })
             });
 
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 if http2_only {
-                    server::conn::http2::Builder::new(TokioExecutor)
+                    server::conn::http2::Builder::new(SmolExecutor)
                         .serve_connection(io, service)
                         .await
                         .expect("server error");
@@ -399,9 +392,9 @@ async fn async_test(cfg: __TestConfig) {
                         .await
                         .expect("server error");
                 }
-            });
+            }).detach();
         }
-    });
+    }).detach();
 
     if cfg.proxy {
         let (proxy_addr, proxy) = naive_proxy(ProxyConfig {
@@ -410,7 +403,7 @@ async fn async_test(cfg: __TestConfig) {
             version: cfg.server_version,
         })
         .await;
-        tokio::task::spawn(proxy);
+        smol::spawn(proxy).detach();
         addr = proxy_addr;
     }
 
@@ -429,19 +422,19 @@ async fn async_test(cfg: __TestConfig) {
 
         async move {
             let stream = TcpStream::connect(addr).await.unwrap();
-            let io = TokioIo::new(stream);
+            let io = FuturesIo::new(stream);
 
             let res = if http2_only {
-                let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor)
+                let (mut sender, conn) = hyper::client::conn::http2::Builder::new(SmolExecutor)
                     .handshake(io)
                     .await
                     .unwrap();
 
-                tokio::task::spawn(async move {
+                smol::spawn(async move {
                     if let Err(err) = conn.await {
                         panic!("{:?}", err);
                     }
-                });
+                }).detach();
                 sender.send_request(req).await.unwrap()
             } else {
                 let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
@@ -449,11 +442,11 @@ async fn async_test(cfg: __TestConfig) {
                     .await
                     .unwrap();
 
-                tokio::task::spawn(async move {
+                smol::spawn(async move {
                     if let Err(err) = conn.await {
                         panic!("{:?}", err);
                     }
-                });
+                }).detach();
                 sender.send_request(req).await.unwrap()
             };
 
@@ -507,13 +500,13 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
     let proxy_addr = listener.local_addr().unwrap();
 
     let fut = async move {
-        tokio::task::spawn(async move {
+        smol::spawn(async move {
             let prev = counter.fetch_add(1, Ordering::Relaxed);
             assert!(max_connections > prev, "proxy max connections");
 
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
-                let io = TokioIo::new(stream);
+                let io = FuturesIo::new(stream);
 
                 let service = service_fn(move |mut req| {
                     async move {
@@ -529,31 +522,31 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                         let stream = TcpStream::connect(format!("{}:{}", uri, port))
                             .await
                             .unwrap();
-                        let io = TokioIo::new(stream);
+                        let io = FuturesIo::new(stream);
 
                         let resp = if http2_only {
                             let (mut sender, conn) =
-                                hyper::client::conn::http2::Builder::new(TokioExecutor)
+                                hyper::client::conn::http2::Builder::new(SmolExecutor)
                                     .handshake(io)
                                     .await
                                     .unwrap();
 
-                            tokio::task::spawn(async move {
+                            smol::spawn(async move {
                                 if let Err(err) = conn.await {
                                     panic!("{:?}", err);
                                 }
-                            });
+                            }).detach();
 
                             sender.send_request(req).await?
                         } else {
                             let builder = hyper::client::conn::http1::Builder::new();
                             let (mut sender, conn) = builder.handshake(io).await.unwrap();
 
-                            tokio::task::spawn(async move {
+                            smol::spawn(async move {
                                 if let Err(err) = conn.await {
                                     panic!("{:?}", err);
                                 }
-                            });
+                            }).detach();
 
                             sender.send_request(req).await?
                         };
@@ -575,7 +568,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                 });
 
                 if http2_only {
-                    server::conn::http2::Builder::new(TokioExecutor)
+                    server::conn::http2::Builder::new(SmolExecutor)
                         .serve_connection(io, service)
                         .await
                         .unwrap();
@@ -586,7 +579,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                         .unwrap();
                 }
             }
-        });
+        }).detach();
     };
 
     (proxy_addr, fut)
