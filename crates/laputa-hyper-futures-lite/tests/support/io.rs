@@ -164,3 +164,88 @@ impl Future for SmolSleep {
 }
 
 impl Sleep for SmolSleep {}
+
+pub struct HyperIo<T> {
+    inner: T,
+}
+
+impl<T> HyperIo<T> {
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+
+    pub fn inner(self) -> T {
+        self.inner
+    }
+}
+
+impl<T> futures_io::AsyncRead for HyperIo<T>
+where
+    T: hyper::rt::Read,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let mut inner = unsafe {
+            // SAFETY: `HyperIo` has no drop implementation and structurally
+            // pins its only field; the field is never moved while projected.
+            self.map_unchecked_mut(|this| &mut this.inner)
+        };
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        let mut read_buf = hyper::rt::ReadBuf::new(buf);
+        match hyper::rt::Read::poll_read(inner.as_mut(), cx, read_buf.unfilled()) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(read_buf.filled().len())),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T> futures_io::AsyncWrite for HyperIo<T>
+where
+    T: hyper::rt::Write,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let mut inner = unsafe {
+            // SAFETY: see the read projection above.
+            self.map_unchecked_mut(|this| &mut this.inner)
+        };
+        hyper::rt::Write::poll_write(inner.as_mut(), cx, buf)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let mut inner = unsafe {
+            // SAFETY: see the read projection above.
+            self.map_unchecked_mut(|this| &mut this.inner)
+        };
+        hyper::rt::Write::poll_write_vectored(inner.as_mut(), cx, bufs)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let mut inner = unsafe {
+            // SAFETY: see the read projection above.
+            self.map_unchecked_mut(|this| &mut this.inner)
+        };
+        hyper::rt::Write::poll_flush(inner.as_mut(), cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let mut inner = unsafe {
+            // SAFETY: see the read projection above.
+            self.map_unchecked_mut(|this| &mut this.inner)
+        };
+        hyper::rt::Write::poll_shutdown(inner.as_mut(), cx)
+    }
+}

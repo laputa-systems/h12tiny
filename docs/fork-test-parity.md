@@ -30,9 +30,9 @@ flow-control exchange) are separate rows and do not inflate inherited counts.
 | hyper | ready_on_poll_stream | `tests/ready_on_poll_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test ready_on_poll_stream` | - |
 | hyper | unbuffered_stream | `tests/unbuffered_stream.rs` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --test unbuffered_stream` | - |
 | hyper | h1_ready_in_flight | `tests/h1_ready_in_flight.rs` | 1 | 0 | 1 | excluded | not in gate | `ready_on_poll_stream`, `h1_flush_before_yield` |
-| hyper | client | `tests/client.rs` | 70 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test client` | - |
-| hyper | server | `tests/server.rs` | 99 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test server` | - |
-| hyper | integration | `tests/integration.rs` | 14 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test integration` | - |
+| hyper | client | `tests/client.rs` | 70 | 70 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test client` | - |
+| hyper | server | `tests/server.rs` | 99 | 99 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test server` | - |
+| hyper | integration | `tests/integration.rs` | 14 | 14 | 0 | ported | `cargo test --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full --test integration` | - |
 | fastwebsockets | fastwebsockets | `crates/laputa-fastwebsockets-futures-lite` | 37 | 37 | 0 | ported | `cargo test --manifest-path crates/laputa-fastwebsockets-futures-lite/Cargo.toml --locked --all-features` | self |
 
 Exclusion reasons:

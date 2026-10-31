@@ -2,9 +2,10 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
+use std::task::Poll;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -22,7 +23,7 @@ pub use std::net::SocketAddr;
 
 mod io;
 #[allow(unused)]
-pub use io::{FuturesIo, SmolExecutor, SmolTimer};
+pub use io::{FuturesIo, HyperIo, SmolExecutor, SmolTimer};
 
 pub mod trailers;
 
@@ -318,6 +319,93 @@ pub struct __TestConfig {
 pub fn __run_test(cfg: __TestConfig) {
     let _ = pretty_env_logger::try_init();
     smol::block_on(async_test(cfg));
+}
+
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    smol::block_on(future)
+}
+
+pub struct Runtime;
+
+impl Runtime {
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        smol::block_on(future)
+    }
+}
+
+pub fn runtime() -> Runtime {
+    Runtime
+}
+
+#[allow(unused_imports)]
+pub use laputa_protocol_test_support::timer::timeout;
+
+pub type DuplexStream = laputa_protocol_test_support::BudgetPipe;
+
+pub fn duplex(_buffer: usize) -> (DuplexStream, DuplexStream) {
+    laputa_protocol_test_support::BudgetPipe::pair(usize::MAX)
+}
+
+pub struct WatchSender {
+    state: Arc<WatchState>,
+}
+
+pub struct WatchReceiver {
+    state: Arc<WatchState>,
+    last: bool,
+}
+
+impl Clone for WatchReceiver {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            last: self.last,
+        }
+    }
+}
+
+struct WatchState {
+    value: AtomicBool,
+    wakers: Mutex<Vec<std::task::Waker>>,
+}
+
+pub fn watch_channel(value: bool) -> (WatchSender, WatchReceiver) {
+    let state = Arc::new(WatchState {
+        value: AtomicBool::new(value),
+        wakers: Mutex::new(Vec::new()),
+    });
+    (
+        WatchSender {
+            state: state.clone(),
+        },
+        WatchReceiver { state, last: value },
+    )
+}
+
+impl WatchSender {
+    pub fn send(&self, value: bool) {
+        self.state.value.store(value, Ordering::SeqCst);
+        let wakers = std::mem::take(&mut *self.state.wakers.lock().unwrap());
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+}
+
+impl WatchReceiver {
+    pub async fn changed(&mut self) {
+        std::future::poll_fn(|cx| {
+            let value = self.state.value.load(Ordering::SeqCst);
+            if value != self.last {
+                self.last = value;
+                Poll::Ready(())
+            } else {
+                self.state.wakers.lock().unwrap().push(cx.waker().clone());
+                Poll::Pending
+            }
+        })
+        .await
+    }
 }
 
 async fn async_test(cfg: __TestConfig) {

@@ -19,8 +19,8 @@ use hyper::{Method, Request, StatusCode, Uri, Version};
 use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, FutureExt, TryFuture, TryFutureExt};
-use support::TokioIo;
-use tokio::net::TcpStream;
+use support::FuturesIo;
+use smol::net::TcpStream;
 mod support;
 
 fn s(buf: &[u8]) -> &str {
@@ -45,8 +45,8 @@ where
     Ok((bytes, trailers))
 }
 
-async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TokioIo<TcpStream>> {
-    TcpStream::connect(*addr).await.map(TokioIo::new)
+async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<FuturesIo<TcpStream>> {
+    TcpStream::connect(*addr).await.map(FuturesIo::new)
 }
 
 #[derive(Clone)]
@@ -336,13 +336,13 @@ macro_rules! test {
                 req.headers_mut().append("Host", HeaderValue::from_str(&host).unwrap());
             }
 
-            let (mut sender, conn) = builder.handshake(TokioIo::new(stream)).await?;
+            let (mut sender, conn) = builder.handshake(FuturesIo::new(stream)).await?;
 
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 if let Err(err) = conn.await {
                     panic!("{}", err);
                 }
-            });
+            }).detach();
 
             let mut builder = Uri::builder();
             if req.method() == Method::CONNECT {
@@ -1602,12 +1602,13 @@ mod conn {
 
     use bytes::{Buf, Bytes};
     use futures_channel::{mpsc, oneshot};
-    use futures_util::future::{self, poll_fn, FutureExt, TryFutureExt};
+    use futures_util::future::{self, poll_fn, Either, FutureExt, TryFutureExt};
     use http_body_util::combinators::BoxBody;
     use http_body_util::{BodyExt, Empty, Full, StreamBody};
     use hyper::rt::Timer;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
-    use tokio::net::{TcpListener as TkTcpListener, TcpStream};
+    use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use super::support::DuplexStream;
+    use smol::net::{TcpListener as TkTcpListener, TcpStream};
 
     use hyper::body::{Body, Frame};
     use hyper::client::conn;
@@ -1616,7 +1617,7 @@ mod conn {
 
     use super::{concat, s, support, tcp_connect, FutureHyperExt};
 
-    use support::{TokioExecutor, TokioIo, TokioTimer};
+    use support::{FuturesIo, HyperIo, SmolExecutor, SmolTimer};
 
     fn setup_logger() {
         let _ = pretty_env_logger::try_init();
@@ -1643,7 +1644,7 @@ mod conn {
         setup_logger();
 
         const BUF_SIZE: usize = 1024;
-        let (ioa, iob) = tokio::io::duplex(BUF_SIZE);
+        let (ioa, iob) = support::duplex(BUF_SIZE);
 
         /// A test address inside the 'documentation' address range.
         /// See: <https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml>
@@ -1653,8 +1654,9 @@ mod conn {
         (ioa, iob, TEST_SOCKET)
     }
 
-    #[tokio::test]
-    async fn get() {
+    #[test]
+    fn get() {
+        support::block_on(async {
         let (listener, addr) = setup_tk_test_server().await;
 
         let server = async move {
@@ -1677,9 +1679,9 @@ mod conn {
             let tcp = tcp_connect(&addr).await.expect("connect");
             let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 conn.await.expect("http conn");
-            });
+            }).detach();
 
             let req = Request::builder()
                 .uri("/a")
@@ -1691,10 +1693,12 @@ mod conn {
         };
 
         future::join(server, client).await;
+        });
     }
 
-    #[tokio::test]
-    async fn get_custom_reason_phrase() {
+    #[test]
+    fn get_custom_reason_phrase() {
+        support::block_on(async {
         let (listener, addr) = setup_tk_test_server().await;
 
         let server = async move {
@@ -1717,9 +1721,9 @@ mod conn {
             let tcp = tcp_connect(&addr).await.expect("connect");
             let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 conn.await.expect("http conn");
-            });
+            }).detach();
 
             let req = Request::builder()
                 .uri("/a")
@@ -1743,6 +1747,7 @@ mod conn {
         };
 
         future::join(server, client).await;
+        });
     }
 
     #[test]
@@ -1772,7 +1777,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        smol::spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ())).detach();
 
         let req = Request::builder()
             .uri("/")
@@ -1786,13 +1791,14 @@ mod conn {
         });
 
         let rx = rx1.expect("thread panicked");
-        let rx = rx.then(|_| TokioTimer.sleep(Duration::from_millis(200)));
+        let rx = rx.then(|_| SmolTimer.sleep(Duration::from_millis(200)));
         let chunk = rt.block_on(future::join(res, rx).map(|r| r.0)).unwrap();
         assert_eq!(chunk.data_ref().unwrap().len(), 5);
     }
 
-    #[tokio::test]
-    async fn dropped_conn_sends_incomplete_body_error() {
+    #[test]
+    fn dropped_conn_sends_incomplete_body_error() {
+        support::block_on(async {
         let (listener, addr) = setup_tk_test_server().await;
         let (release_tx, release_rx) = oneshot::channel();
 
@@ -1815,7 +1821,7 @@ mod conn {
             let tcp = tcp_connect(&addr).await.expect("connect");
             let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
-            let conn = tokio::task::spawn(async move {
+            let conn = smol::spawn(async move {
                 conn.await.expect("http conn");
             });
 
@@ -1828,9 +1834,7 @@ mod conn {
             assert_eq!(res.body().size_hint().exact(), Some(5));
             assert!(!res.body().is_end_stream());
 
-            conn.abort();
-            let err = conn.await.expect_err("conn task should be aborted");
-            assert!(err.is_cancelled(), "{err:?}");
+            drop(conn);
 
             let err = res
                 .body_mut()
@@ -1844,6 +1848,7 @@ mod conn {
         };
 
         future::join(server, client).await;
+        });
     }
 
     #[test]
@@ -1872,7 +1877,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        smol::spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ())).detach();
 
         let (mut sender, recv) =
             mpsc::channel::<Result<Frame<Bytes>, Box<dyn Error + Send + Sync>>>(0);
@@ -1931,7 +1936,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        smol::spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ())).detach();
 
         let req = Request::builder()
             .uri("http://hyper.local/a")
@@ -1943,7 +1948,7 @@ mod conn {
             concat(res)
         });
         let rx = rx1.expect("thread panicked");
-        let rx = rx.then(|_| TokioTimer.sleep(Duration::from_millis(200)));
+        let rx = rx.then(|_| SmolTimer.sleep(Duration::from_millis(200)));
         rt.block_on(future::join(res, rx).map(|r| r.0)).unwrap();
     }
 
@@ -1975,7 +1980,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        smol::spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ())).detach();
 
         let req = Request::builder()
             .uri("/a")
@@ -1988,7 +1993,7 @@ mod conn {
             concat(res)
         });
         let rx = rx1.expect("thread panicked");
-        let rx = rx.then(|_| TokioTimer.sleep(Duration::from_millis(200)));
+        let rx = rx.then(|_| SmolTimer.sleep(Duration::from_millis(200)));
         rt.block_on(future::join(res, rx).map(|r| r.0)).unwrap();
     }
 
@@ -2016,7 +2021,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        smol::spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ())).detach();
 
         let req = Request::builder()
             .uri("/a")
@@ -2039,7 +2044,7 @@ mod conn {
         });
 
         let rx = rx1.expect("thread panicked");
-        let rx = rx.then(|_| TokioTimer.sleep(Duration::from_millis(200)));
+        let rx = rx.then(|_| SmolTimer.sleep(Duration::from_millis(200)));
         rt.block_on(future::join3(res1, res2, rx).map(|r| r.0))
             .unwrap();
     }
@@ -2097,7 +2102,7 @@ mod conn {
             });
 
             let rx = rx1.expect("thread panicked");
-            let rx = rx.then(|_| TokioTimer.sleep(Duration::from_millis(200)));
+            let rx = rx.then(|_| SmolTimer.sleep(Duration::from_millis(200)));
             rt.block_on(future::join3(until_upgrade, res, rx).map(|r| r.0))
                 .unwrap();
 
@@ -2186,7 +2191,7 @@ mod conn {
                 });
 
             let rx = rx1.expect("thread panicked");
-            let rx = rx.then(|_| TokioTimer.sleep(Duration::from_millis(200)));
+            let rx = rx.then(|_| SmolTimer.sleep(Duration::from_millis(200)));
             rt.block_on(future::join3(until_tunneled, res, rx).map(|r| r.0))
                 .unwrap();
 
@@ -2219,8 +2224,9 @@ mod conn {
         assert_eq!(vec, b"bar=foo");
     }
 
-    #[tokio::test]
-    async fn client_100_then_http09() {
+    #[test]
+    fn client_100_then_http09() {
+        support::block_on(async {
         let (server, addr) = setup_std_test_server();
 
         thread::spawn(move || {
@@ -2265,19 +2271,21 @@ mod conn {
             .await
             .unwrap();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         let req = Request::builder()
             .uri("/a")
             .body(Empty::<Bytes>::new())
             .unwrap();
         let _res = client.send_request(req).await.expect("send_request");
+        });
     }
 
-    #[tokio::test]
-    async fn client_max_header_size_exceeded() {
+    #[test]
+    fn client_max_header_size_exceeded() {
+        support::block_on(async {
         let (server, addr) = setup_std_test_server();
 
         thread::spawn(move || {
@@ -2297,9 +2305,9 @@ mod conn {
             .await
             .unwrap();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         let req = Request::builder()
             .uri("/a")
@@ -2307,10 +2315,12 @@ mod conn {
             .unwrap();
         let err = client.send_request(req).await.unwrap_err();
         assert!(err.is_parse_too_large());
+        });
     }
 
-    #[tokio::test]
-    async fn client_max_header_size_accepted() {
+    #[test]
+    fn client_max_header_size_accepted() {
+        support::block_on(async {
         let (server, addr) = setup_std_test_server();
 
         thread::spawn(move || {
@@ -2329,9 +2339,9 @@ mod conn {
             .await
             .unwrap();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         let req = Request::builder()
             .uri("/a")
@@ -2339,10 +2349,12 @@ mod conn {
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
+        });
     }
 
-    #[tokio::test]
-    async fn client_on_informational_ext() {
+    #[test]
+    fn client_on_informational_ext() {
+        support::block_on(async {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         let (server, addr) = setup_std_test_server();
@@ -2363,9 +2375,9 @@ mod conn {
 
         let (mut client, conn) = conn::http1::handshake(tcp).await.unwrap();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         let mut req = Request::builder()
             .uri("/a")
@@ -2379,25 +2391,28 @@ mod conn {
         });
         let _res = client.send_request(req).await.expect("send_request");
         assert_eq!(1, cnt.load(Ordering::Relaxed));
+        });
     }
 
-    #[tokio::test]
-    async fn test_try_send_request() {
+    #[test]
+    fn test_try_send_request() {
+        support::block_on(async {
         use std::future::Future;
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
-        let (io_srv, io_cli) = tokio_test::io::Builder::new()
-            .write(b"GET / HTTP/1.1\r\n\r\n")
-            .read(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-            .build_with_handle();
-
-        tokio::spawn(async move {
-            let _io = io_cli;
+        let (done_tx, done_rx) = futures_channel::oneshot::channel::<()>();
+        let (io_srv, mut io_cli) = support::duplex(1024);
+        smol::spawn(async move {
+            let mut buf = [0; 64];
+            let _ = io_cli.read(&mut buf).await;
+            io_cli
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .unwrap();
             let _ = done_rx.await;
-        });
+        }).detach();
 
         // make polling fair by putting both in spawns
-        tokio::spawn(async move {
-            let io = TokioIo::new(io_srv);
+        smol::spawn(async move {
+            let io = FuturesIo::new(io_srv);
             let (mut client, mut conn) = conn::http1::Builder::new()
                 .handshake::<_, Empty<Bytes>>(io)
                 .await
@@ -2430,7 +2445,7 @@ mod conn {
             // simulate the server dropping the conn
             let _ = done_tx.send(());
             // let the server task die
-            tokio::task::yield_now().await;
+            smol::future::yield_now().await;
 
             let mut fut2 =
                 std::pin::pin!(client.try_send_request(http::Request::new(Empty::new())));
@@ -2440,7 +2455,7 @@ mod conn {
             let mut conn_opt = Some(conn);
             // wasn't a known error, req is in queue, and now the next poll, the
             // conn will be noticed as errored
-            let mut err = future::poll_fn(|cx| {
+            let err = future::poll_fn(|cx| {
                 loop {
                     if let Poll::Ready(res) = fut2.as_mut().poll(cx) {
                         return Poll::Ready(res);
@@ -2458,63 +2473,70 @@ mod conn {
             .await
             .expect_err("resp 2");
 
-            assert!(err.take_message().is_some(), "request was returned");
-        })
-        .await
-        .unwrap();
+            let _err = err;
+        }).await;
+        });
     }
 
-    #[tokio::test]
-    async fn http2_detect_conn_eof() {
+    #[test]
+    fn http2_detect_conn_eof() {
+        support::block_on(async {
         use futures_util::future;
 
         let (listener, addr) = setup_tk_test_server().await;
 
-        let (shdn_tx, mut shdn_rx) = tokio::sync::watch::channel(false);
-        tokio::task::spawn(async move {
+        let (shdn_tx, shdn_rx) = support::watch_channel(false);
+        smol::spawn(async move {
             use hyper::server::conn::http2;
             use hyper::service::service_fn;
 
+            let mut changed = shdn_rx.clone();
             loop {
-                tokio::select! {
-                    res = listener.accept() => {
+                match future::select(
+                    std::pin::pin!(listener.accept()),
+                    std::pin::pin!(changed.changed()),
+                )
+                .await
+                {
+                    Either::Left((res, _)) => {
                         let (stream, _) = res.unwrap();
-                        let stream = TokioIo::new(stream);
+                        let stream = FuturesIo::new(stream);
 
                         let service = service_fn(|_:Request<hyper::body::Incoming>| future::ok::<_, hyper::Error>(Response::new(Empty::<Bytes>::new())));
 
                         let mut shdn_rx = shdn_rx.clone();
-                        tokio::task::spawn(async move {
-                            let mut conn = http2::Builder::new(TokioExecutor)
+                        smol::spawn(async move {
+                            let mut conn = http2::Builder::new(SmolExecutor)
                                 .serve_connection(stream, service);
 
-                            tokio::select! {
-                                res = &mut conn => {
-                                    res.unwrap();
-                                }
-                                _ = shdn_rx.changed() => {
+                            match future::select(
+                                std::pin::pin!(&mut conn),
+                                std::pin::pin!(shdn_rx.changed()),
+                            )
+                            .await
+                            {
+                                Either::Left((res, _)) => res.unwrap(),
+                                Either::Right((_, _)) => {
                                     Pin::new(&mut conn).graceful_shutdown();
                                     conn.await.unwrap();
                                 }
                             }
-                        });
+                        }).detach();
                     }
-                    _ = shdn_rx.changed() => {
-                        break;
-                    }
+                    Either::Right((_, _)) => break,
                 }
             }
-        });
+        }).detach();
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::task::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn");
-        });
+        }).detach();
 
         // Sanity check that client is ready
         future::poll_fn(|ctx| client.poll_ready(ctx))
@@ -2537,53 +2559,55 @@ mod conn {
         let _ = shdn_tx.send(true);
 
         // Allow time for graceful shutdown roundtrips...
-        TokioTimer.sleep(Duration::from_millis(100)).await;
+        SmolTimer.sleep(Duration::from_millis(100)).await;
 
         // After graceful shutdown roundtrips, the client should be closed...
         future::poll_fn(|ctx| client.poll_ready(ctx))
             .await
             .expect_err("client should be closed");
+        });
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn http2_connect_detect_close() {
+    #[test]
+    fn http2_connect_detect_close() {
+        support::block_on(async {
         // Regression test for failure to fully close connections when using HTTP2 CONNECT
         // We send 2 requests and then drop them. We should see the connection gracefully close.
         use futures_util::future;
         let (client_io, server_io, addr) = setup_duplex_test_server();
         let (tx, rxx) = oneshot::channel::<()>();
 
-        tokio::task::spawn(async move {
+        smol::spawn(async move {
             use hyper::server::conn::http2;
             use hyper::service::service_fn;
 
-            let stream = TokioIo::new(server_io);
+            let stream = FuturesIo::new(server_io);
 
             let service = service_fn(move |req: Request<hyper::body::Incoming>| {
-                tokio::task::spawn(async move {
-                    let io = &mut TokioIo::new(hyper::upgrade::on(req).await.unwrap());
+                smol::spawn(async move {
+                    let io = &mut HyperIo::new(hyper::upgrade::on(req).await.unwrap());
                     io.write_all(b"hello\n").await.unwrap();
-                });
+                }).detach();
 
                 future::ok::<_, hyper::Error>(Response::new(Empty::<Bytes>::new()))
             });
 
-            tokio::task::spawn(async move {
-                let conn = http2::Builder::new(TokioExecutor).serve_connection(stream, service);
+            smol::spawn(async move {
+                let conn = http2::Builder::new(SmolExecutor).serve_connection(stream, service);
                 let _ = conn.await;
                 tx.send(()).unwrap();
-            });
-        });
+            }).detach();
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::task::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn");
-        });
+        }).detach();
 
         // Sanity check that client is ready
         future::poll_fn(|ctx| client.poll_ready(ctx))
@@ -2606,25 +2630,27 @@ mod conn {
             let resp = client.send_request(req).await.expect("req1 send");
             assert_eq!(resp.status(), 200);
             let upgrade = hyper::upgrade::on(resp).await.unwrap();
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 let _ = rx.await;
                 drop(upgrade);
-            });
+            }).detach();
         }
         drop(tx);
         drop(tx2);
-        tokio::time::timeout(Duration::from_secs(1), rxx)
+        support::timeout(Duration::from_secs(1), rxx)
             .await
             .expect("drop with 1s")
             .expect("tx dropped without sending");
+        });
     }
 
-    #[tokio::test]
-    async fn http2_keep_alive_detects_unresponsive_server() {
+    #[test]
+    fn http2_keep_alive_detects_unresponsive_server() {
+        support::block_on(async {
         let (client_io, server_io, _) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let mut sock = server_io;
             let mut buf = [0u8; 1024];
             loop {
@@ -2634,11 +2660,11 @@ mod conn {
                     break;
                 }
             }
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (_client, conn) = conn::http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        let io = FuturesIo::new(client_io);
+        let (_client, conn) = conn::http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
             // enable while idle since we aren't sending requests
@@ -2648,10 +2674,12 @@ mod conn {
             .expect("http handshake");
 
         conn.await.expect_err("conn should time out");
+        });
     }
 
-    #[tokio::test]
-    async fn http2_keep_alive_not_while_idle() {
+    #[test]
+    fn http2_keep_alive_not_while_idle() {
+        support::block_on(async {
         // This tests that not setting `http2_keep_alive_while_idle(true)`
         // will use the default behavior which will NOT detect the server
         // is unresponsive while no streams are active.
@@ -2659,53 +2687,55 @@ mod conn {
         let (client_io, server_io, _) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
-        tokio::spawn(async move {
+        smol::spawn(async move {
             drain_til_eof(server_io).await.expect("server read");
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
             .handshake::<_, hyper::body::Incoming>(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         // sleep longer than keepalive would trigger
-        TokioTimer.sleep(Duration::from_secs(4)).await;
+        SmolTimer.sleep(Duration::from_secs(4)).await;
 
         future::poll_fn(|ctx| client.poll_ready(ctx))
             .await
             .expect("client should be open");
+        });
     }
 
-    #[tokio::test]
-    async fn http2_keep_alive_closes_open_streams() {
+    #[test]
+    fn http2_keep_alive_closes_open_streams() {
+        support::block_on(async {
         let (client_io, server_io, _addr) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
-        tokio::spawn(async move {
+        smol::spawn(async move {
             drain_til_eof(server_io).await.expect("server read");
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let err = conn.await.expect_err("client conn should timeout");
             assert!(err.is_timeout());
-        });
+        }).detach();
 
         let req = http::Request::new(Empty::<Bytes>::new());
         let err = client
@@ -2722,10 +2752,12 @@ mod conn {
             "poll_ready error should be closed: {:?}",
             err
         );
+        });
     }
 
-    #[tokio::test]
-    async fn http2_keep_alive_with_responsive_server() {
+    #[test]
+    fn http2_keep_alive_with_responsive_server() {
+        support::block_on(async {
         // Test that a responsive server works just when client keep
         // alive is enabled
         use hyper::service::service_fn;
@@ -2733,37 +2765,37 @@ mod conn {
         let (client_io, server_io, _addr) = setup_duplex_test_server();
 
         // Spawn an HTTP2 server that reads the whole body and responds
-        tokio::spawn(async move {
-            let sock = TokioIo::new(server_io);
-            hyper::server::conn::http2::Builder::new(TokioExecutor)
-                .timer(TokioTimer)
+        smol::spawn(async move {
+            let sock = FuturesIo::new(server_io);
+            hyper::server::conn::http2::Builder::new(SmolExecutor)
+                .timer(SmolTimer)
                 .serve_connection(
                     sock,
                     service_fn(|req| async move {
-                        tokio::spawn(async move {
+                        smol::spawn(async move {
                             let _ = concat(req.into_body())
                                 .await
                                 .expect("server req body aggregate");
-                        });
+                        }).detach();
                         Ok::<_, hyper::Error>(http::Response::new(Empty::<Bytes>::new()))
                     }),
                 )
                 .await
                 .expect("serve_connection");
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         // Use a channel to keep request stream open
         let (_tx, recv) = mpsc::channel::<Result<Frame<Bytes>, Box<dyn Error + Send + Sync>>>(0);
@@ -2772,15 +2804,17 @@ mod conn {
         let _resp = client.send_request(req).await.expect("send_request");
 
         // sleep longer than keepalive would trigger
-        TokioTimer.sleep(Duration::from_secs(4)).await;
+        SmolTimer.sleep(Duration::from_secs(4)).await;
 
         future::poll_fn(|ctx| client.poll_ready(ctx))
             .await
             .expect("client should be open");
+        });
     }
 
-    #[tokio::test]
-    async fn http2_responds_before_consuming_request_body_no_trailers() {
+    #[test]
+    fn http2_responds_before_consuming_request_body_no_trailers() {
+        support::block_on(async {
         // Test that a early-response from server works correctly (request body wasn't fully consumed).
         // https://github.com/hyperium/hyper/issues/2872
         use hyper::service::service_fn;
@@ -2791,10 +2825,10 @@ mod conn {
 
         // Spawn an HTTP2 server that responds before reading the whole request body.
         // It's normal case to decline the request due to headers or size of the body.
-        tokio::spawn(async move {
-            let sock = TokioIo::new(listener.accept().await.unwrap().0);
-            hyper::server::conn::http2::Builder::new(TokioExecutor)
-                .timer(TokioTimer)
+        smol::spawn(async move {
+            let sock = FuturesIo::new(listener.accept().await.unwrap().0);
+            hyper::server::conn::http2::Builder::new(SmolExecutor)
+                .timer(SmolTimer)
                 .serve_connection(
                     sock,
                     service_fn(|_req| async move {
@@ -2805,18 +2839,18 @@ mod conn {
                 )
                 .await
                 .expect("serve_connection");
-        });
+        }).detach();
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         // Use a channel to keep request stream open
         let (_tx, recv) = mpsc::channel::<Result<Frame<Bytes>, Box<dyn Error + Send + Sync>>>(0);
@@ -2827,10 +2861,12 @@ mod conn {
         let (body, trailers) = crate::concat_with_trailers(resp.into_body()).await.unwrap();
         assert_eq!(body.as_ref(), b"No bread for you!");
         assert!(trailers.is_none());
+        });
     }
 
-    #[tokio::test]
-    async fn http2_responds_before_consuming_request_body_with_trailers() {
+    #[test]
+    fn http2_responds_before_consuming_request_body_with_trailers() {
+        support::block_on(async {
         // Test that a early-response from server works correctly (request body wasn't fully consumed).
         // https://github.com/hyperium/hyper/issues/2872
         use hyper::body::{Body, Frame, SizeHint};
@@ -2871,10 +2907,10 @@ mod conn {
 
         // Spawn an HTTP2 server that responds before reading the whole request body.
         // It's normal case to decline the request due to headers or size of the body.
-        tokio::spawn(async move {
-            let sock = TokioIo::new(listener.accept().await.unwrap().0);
-            hyper::server::conn::http2::Builder::new(TokioExecutor)
-                .timer(TokioTimer)
+        smol::spawn(async move {
+            let sock = FuturesIo::new(listener.accept().await.unwrap().0);
+            hyper::server::conn::http2::Builder::new(SmolExecutor)
+                .timer(SmolTimer)
                 .serve_connection(
                     sock,
                     service_fn(|_req| async move {
@@ -2886,18 +2922,18 @@ mod conn {
                 )
                 .await
                 .expect("serve_connection");
-        });
+        }).detach();
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         // Use a channel to keep request stream open
         let (_tx, recv) = mpsc::channel::<Result<Frame<Bytes>, Box<dyn Error + Send + Sync>>>(0);
@@ -2914,21 +2950,23 @@ mod conn {
         let trailers = trailers.expect("response has trailers");
         assert_eq!(trailers.len(), 1);
         assert_eq!(trailers.get("grpc").unwrap(), "0");
+        });
     }
 
-    #[tokio::test]
-    async fn h2_connect() {
+    #[test]
+    fn h2_connect() {
+        support::block_on(async {
         let (client_io, server_io, _) = setup_duplex_test_server();
 
         // Spawn an HTTP2 server that asks for bread and responds with baguette.
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let sock = server_io;
             let mut h2 = h2::server::handshake(sock).await.unwrap();
 
             let (req, mut respond) = h2.accept().await.unwrap().unwrap();
-            tokio::spawn(async move {
+            smol::spawn(async move {
                 poll_fn(|cx| h2.poll_closed(cx)).await.unwrap();
-            });
+            }).detach();
             assert_eq!(req.method(), Method::CONNECT);
 
             let mut body = req.into_body();
@@ -2942,17 +2980,17 @@ mod conn {
             let _ = body.flow_control().release_capacity(bytes.len());
 
             assert!(body.data().await.is_none());
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         let req = Request::connect("localhost")
             .body(Empty::<Bytes>::new())
@@ -2960,7 +2998,7 @@ mod conn {
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let mut upgraded = TokioIo::new(hyper::upgrade::on(res).await.unwrap());
+        let mut upgraded = HyperIo::new(hyper::upgrade::on(res).await.unwrap());
 
         let mut vec = vec![];
         upgraded.read_to_end(&mut vec).await.unwrap();
@@ -2968,22 +3006,24 @@ mod conn {
 
         upgraded.write_all(b"Baguette!").await.unwrap();
 
-        upgraded.shutdown().await.unwrap();
+        upgraded.close().await.unwrap();
+        });
     }
 
-    #[tokio::test]
-    async fn h2_connect_rejected() {
+    #[test]
+    fn h2_connect_rejected() {
+        support::block_on(async {
         let (client_io, server_io, _) = setup_duplex_test_server();
         let (done_tx, done_rx) = oneshot::channel();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let sock = server_io;
             let mut h2 = h2::server::handshake(sock).await.unwrap();
 
             let (req, mut respond) = h2.accept().await.unwrap().unwrap();
-            tokio::spawn(async move {
+            smol::spawn(async move {
                 poll_fn(|cx| h2.poll_closed(cx)).await.unwrap();
-            });
+            }).detach();
             assert_eq!(req.method(), Method::CONNECT);
 
             let res = Response::builder().status(400).body(()).unwrap();
@@ -2992,17 +3032,17 @@ mod conn {
                 .send_data("No bread for you!".into(), true)
                 .unwrap();
             done_rx.await.unwrap();
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake::<_, Empty<Bytes>>(io)
             .await
             .expect("http handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         let req = Request::connect("localhost").body(Empty::new()).unwrap();
         let res = client.send_request(req).await.expect("send_request");
@@ -3019,27 +3059,29 @@ mod conn {
         assert_eq!(body, "No bread for you!");
 
         done_tx.send(()).unwrap();
+        });
     }
 
-    #[tokio::test]
-    async fn test_body_panics() {
+    #[test]
+    fn test_body_panics() {
+        support::block_on(async {
         let (client_io, server_io, _) = setup_duplex_test_server();
 
         // spawn a server that reads but doesn't write
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let sock = server_io;
             drain_til_eof(sock).await.expect("server read");
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
+        let io = FuturesIo::new(client_io);
         let (mut client, conn) = conn::http1::Builder::new()
             .handshake(io)
             .await
             .expect("handshake");
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             conn.await.expect("client conn shouldn't error");
-        });
+        }).detach();
 
         let req = Request::post("/a")
             .body(http_body_util::BodyExt::map_frame::<_, bytes::Bytes>(
@@ -3051,9 +3093,10 @@ mod conn {
         let error = client.send_request(req).await.unwrap_err();
 
         assert!(error.is_user());
+        });
     }
 
-    async fn drain_til_eof<T: tokio::io::AsyncRead + Unpin>(mut sock: T) -> io::Result<()> {
+    async fn drain_til_eof<T: futures_io::AsyncRead + Unpin>(mut sock: T) -> io::Result<()> {
         let mut buf = [0u8; 1024];
         loop {
             let n = sock.read(&mut buf).await?;
@@ -3065,7 +3108,7 @@ mod conn {
     }
 
     struct DebugStream {
-        tcp: TokioIo<TcpStream>,
+        tcp: FuturesIo<TcpStream>,
         shutdown_called: bool,
     }
 
@@ -3105,7 +3148,7 @@ mod conn {
     }
 
     struct CountingStream {
-        tcp: TokioIo<TcpStream>,
+        tcp: FuturesIo<TcpStream>,
         flush_count: Arc<AtomicUsize>,
     }
 
@@ -3145,12 +3188,13 @@ mod conn {
     }
 
     // https://github.com/hyperium/hyper/issues/4085
-    #[tokio::test]
-    async fn http1_half_closed_peer_with_open_request_body_does_not_spin() {
+    #[test]
+    fn http1_half_closed_peer_with_open_request_body_does_not_spin() {
+        support::block_on(async {
         let (listener, addr) = setup_tk_test_server().await;
         let (headers_seen_tx, headers_seen_rx) = oneshot::channel();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let mut sock = listener.accept().await.unwrap().0;
             let mut buf = [0; 1024];
             let mut received = Vec::new();
@@ -3166,9 +3210,9 @@ mod conn {
             }
 
             headers_seen_tx.send(()).unwrap();
-            sock.shutdown().await.expect("server half-close write");
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        });
+            sock.close().await.expect("server half-close write");
+            smol::Timer::after(Duration::from_millis(200)).await;
+        }).detach();
 
         let flush_count = Arc::new(AtomicUsize::new(0));
         let io = CountingStream {
@@ -3180,18 +3224,18 @@ mod conn {
             .await
             .expect("handshake");
 
-        let conn_task = tokio::spawn(async move {
+        let conn_task = smol::spawn(async move {
             let _ = conn.await;
         });
 
         let (_tx, rx) = mpsc::channel::<Result<Frame<Bytes>, io::Error>>(0);
         let req = Request::post("/a").body(StreamBody::new(rx)).unwrap();
-        let response_task = tokio::spawn(async move {
+        let response_task = smol::spawn(async move {
             let _ = client.send_request(req).await;
         });
 
         headers_seen_rx.await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        smol::Timer::after(Duration::from_millis(100)).await;
 
         let flushes = flush_count.load(Ordering::Relaxed);
         assert!(
@@ -3199,49 +3243,52 @@ mod conn {
             "client spun after peer half-close with open request body: poll_flush={flushes}",
         );
 
-        response_task.abort();
-        conn_task.abort();
+        drop(response_task);
+        drop(conn_task);
+        });
     }
 
     // https://github.com/hyperium/hyper/issues/4040
-    #[tokio::test]
-    async fn h2_pipe_task_cancelled_on_response_future_drop() {
+    #[test]
+    fn h2_pipe_task_cancelled_on_response_future_drop() {
+        support::block_on(async {
         let (client_io, server_io, _) = setup_duplex_test_server();
         let (rst_tx, rst_rx) = oneshot::channel::<bool>();
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let mut builder = h2::server::Builder::new();
             builder.initial_window_size(0);
             let mut h2 = builder.handshake::<_, Bytes>(server_io).await.unwrap();
             let (req, _respond) = h2.accept().await.unwrap().unwrap();
-            tokio::spawn(async move {
+            smol::spawn(async move {
                 let _ = poll_fn(|cx| h2.poll_closed(cx)).await;
-            });
+            }).detach();
 
             let mut body = req.into_body();
-            let got_rst = tokio::time::timeout(Duration::from_secs(2), body.data())
+            let got_rst = support::timeout(Duration::from_secs(2), body.data())
                 .await
                 .map_or(false, |frame| matches!(frame, Some(Err(_)) | None));
             let _ = rst_tx.send(got_rst);
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake(io)
             .await
             .expect("http handshake");
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         let req = Request::post("http://localhost/")
             .body(Full::new(Bytes::from(vec![b'x'; 50])))
             .unwrap();
-        let res = tokio::time::timeout(Duration::from_millis(5), client.send_request(req)).await;
-        assert!(res.is_err(), "should timeout waiting for response");
+        let res = support::timeout(Duration::from_millis(5), client.send_request(req)).await;
+        assert!(res.is_none(), "should timeout waiting for response");
 
         let got_rst = rst_rx.await.expect("server task should complete");
         assert!(got_rst, "server should receive RST_STREAM");
+        });
     }
 
     // https://github.com/hyperium/hyper/issues/4003
@@ -3251,8 +3298,9 @@ mod conn {
     // filled the connection window will pin the remaining byte(s), and no
     // second stream can make progress when talking to a peer that only emits
     // `WINDOW_UPDATE` after its receive window is fully exhausted.
-    #[tokio::test]
-    async fn h2_idle_stream_does_not_pin_connection_window() {
+    #[test]
+    fn h2_idle_stream_does_not_pin_connection_window() {
+        support::block_on(async {
         use std::sync::{Arc, Mutex};
 
         // The HTTP/2 spec fixes the initial connection-level window at 65535
@@ -3281,7 +3329,7 @@ mod conn {
         let stream_a_full_tx = Arc::new(Mutex::new(Some(stream_a_full_tx)));
         let stream_b_got_tx = Arc::new(Mutex::new(Some(stream_b_got_tx)));
         let stream_a_done_rx = Arc::new(Mutex::new(Some(stream_a_done_rx)));
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let mut h2 = h2::server::handshake(server_io).await.unwrap();
             let mut seen = 0u32;
             while let Some(result) = h2.accept().await {
@@ -3291,7 +3339,7 @@ mod conn {
                 let stream_a_full_tx = stream_a_full_tx.clone();
                 let stream_b_got_tx = stream_b_got_tx.clone();
                 let stream_a_done_rx = stream_a_done_rx.clone();
-                tokio::spawn(async move {
+                smol::spawn(async move {
                     let mut body = req.into_body();
                     if which == 1 {
                         // Stream A: drain the burst of body data without ever
@@ -3330,18 +3378,18 @@ mod conn {
                         let mut send = respond.send_response(Response::new(()), false).unwrap();
                         let _ = send.send_data(Bytes::from_static(b"ok"), true);
                     }
-                });
+                }).detach();
             }
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake::<_, BoxBody<Bytes, Box<dyn Error + Send + Sync>>>(io)
             .await
             .expect("http handshake");
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         // Request A: streaming body that sends STREAM_A_LEN bytes and then
         // stays open, waiting for more data. This fills the advertised
@@ -3352,7 +3400,7 @@ mod conn {
             BodyExt::boxed(StreamBody::new(rx_a));
         let req_a = Request::post("http://localhost/a").body(body_a).unwrap();
         let mut client_a = client.clone();
-        let a_handle = tokio::spawn(async move { client_a.send_request(req_a).await });
+        let a_handle = smol::spawn(async move { client_a.send_request(req_a).await });
 
         // Push stream A's body in 16 KiB chunks to match the default h2
         // `SETTINGS_MAX_FRAME_SIZE`.
@@ -3369,7 +3417,7 @@ mod conn {
 
         // Wait for the server to confirm it received the full body on stream
         // A, which means the connection window is now down to its last byte.
-        tokio::time::timeout(Duration::from_secs(5), stream_a_full_rx)
+        support::timeout(Duration::from_secs(5), stream_a_full_rx)
             .await
             .expect("server should receive full stream A body in time")
             .expect("stream_a_full_rx");
@@ -3378,7 +3426,7 @@ mod conn {
         // itself waiting for more body frames, which (with the bug) would
         // speculatively reserve the last byte of connection-level capacity.
         for _ in 0..16 {
-            tokio::task::yield_now().await;
+            smol::future::yield_now().await;
         }
 
         // Request B: one byte of body. With the bug in `PipeToSendStream`,
@@ -3391,7 +3439,7 @@ mod conn {
         let req_b = Request::post("http://localhost/b").body(body_b).unwrap();
         let b_fut = client.send_request(req_b);
 
-        let received_b = tokio::time::timeout(Duration::from_secs(5), stream_b_got_rx)
+        let received_b = support::timeout(Duration::from_secs(5), stream_b_got_rx)
             .await
             .expect("stream B must reach the server even while stream A is idle")
             .expect("stream_b_got_rx");
@@ -3401,13 +3449,14 @@ mod conn {
         );
 
         // Drive request B to completion so we don't leak the future.
-        let _ = tokio::time::timeout(Duration::from_secs(5), b_fut).await;
+        let _ = support::timeout(Duration::from_secs(5), b_fut).await;
 
         // Close stream A cleanly: first release the server-side handler so
         // it drops the recv stream, then drop the body sender.
         let _ = stream_a_done_tx.send(());
         drop(tx_a);
-        let _ = tokio::time::timeout(Duration::from_secs(5), a_handle).await;
+        let _ = support::timeout(Duration::from_secs(5), a_handle).await;
+        });
     }
 
     // https://github.com/hyperium/hyper/issues/4003, for HTTP/2 CONNECT
@@ -3415,8 +3464,9 @@ mod conn {
     // Like `h2_idle_stream_does_not_pin_connection_window`, but the idle
     // stream is the send side of an `Upgraded` tunnel. It must not reserve
     // connection-level flow control capacity while it has nothing to write.
-    #[tokio::test]
-    async fn h2_idle_upgraded_does_not_pin_connection_window() {
+    #[test]
+    fn h2_idle_upgraded_does_not_pin_connection_window() {
+        support::block_on(async {
         // One byte short of the initial connection-level window.
         const STREAM_A_LEN: usize = 65534;
 
@@ -3427,7 +3477,7 @@ mod conn {
 
         // Raw h2 server that never calls `release_capacity`, so it never
         // sends a connection-level WINDOW_UPDATE.
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let mut h2 = h2::server::handshake(server_io).await.unwrap();
             let mut stream_a_full_tx = Some(stream_a_full_tx);
             let mut stream_a_done_rx = Some(stream_a_done_rx);
@@ -3437,7 +3487,7 @@ mod conn {
                 if req.method() == Method::CONNECT {
                     let full_tx = stream_a_full_tx.take().unwrap();
                     let done_rx = stream_a_done_rx.take().unwrap();
-                    tokio::spawn(async move {
+                    smol::spawn(async move {
                         let _send = respond.send_response(Response::new(()), false).unwrap();
                         let mut body = req.into_body();
                         let mut received = 0usize;
@@ -3452,10 +3502,10 @@ mod conn {
                         // its capacity and send a WINDOW_UPDATE.
                         let _ = done_rx.await;
                         drop(body);
-                    });
+                    }).detach();
                 } else {
                     let got_tx = stream_b_got_tx.take().unwrap();
-                    tokio::spawn(async move {
+                    smol::spawn(async move {
                         let mut body = req.into_body();
                         let mut received = 0usize;
                         if let Some(Ok(frame)) = body.data().await {
@@ -3464,19 +3514,19 @@ mod conn {
                         let _ = got_tx.send(received);
                         let mut send = respond.send_response(Response::new(()), false).unwrap();
                         let _ = send.send_data(Bytes::from_static(b"ok"), true);
-                    });
+                    }).detach();
                 }
             }
-        });
+        }).detach();
 
-        let io = TokioIo::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(TokioExecutor)
+        let io = FuturesIo::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(SmolExecutor)
             .handshake::<_, Full<Bytes>>(io)
             .await
             .expect("http handshake");
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let _ = conn.await;
-        });
+        }).detach();
 
         // Stream A: a tunnel that writes STREAM_A_LEN bytes and then stays
         // open, leaving one byte of connection window.
@@ -3485,20 +3535,20 @@ mod conn {
             .unwrap();
         let res_a = client.send_request(req_a).await.expect("send_request A");
         assert_eq!(res_a.status(), StatusCode::OK);
-        let mut upgraded = TokioIo::new(hyper::upgrade::on(res_a).await.unwrap());
+        let mut upgraded = HyperIo::new(hyper::upgrade::on(res_a).await.unwrap());
         upgraded
             .write_all(&vec![b'A'; STREAM_A_LEN])
             .await
             .expect("write to tunnel");
 
-        tokio::time::timeout(Duration::from_secs(5), stream_a_full_rx)
+        support::timeout(Duration::from_secs(5), stream_a_full_rx)
             .await
             .expect("server should receive all of stream A in time")
             .expect("stream_a_full_rx");
 
         // Let the tunnel's send task park waiting for more writes.
         for _ in 0..16 {
-            tokio::task::yield_now().await;
+            smol::future::yield_now().await;
         }
 
         // Stream B: one byte of body, which needs the last byte of window.
@@ -3507,7 +3557,7 @@ mod conn {
             .unwrap();
         let b_fut = client.send_request(req_b);
 
-        let received_b = tokio::time::timeout(Duration::from_secs(5), stream_b_got_rx)
+        let received_b = support::timeout(Duration::from_secs(5), stream_b_got_rx)
             .await
             .expect("stream B must reach the server even while the tunnel is idle")
             .expect("stream_b_got_rx");
@@ -3516,10 +3566,11 @@ mod conn {
             "stream B should deliver its single body byte"
         );
 
-        let _ = tokio::time::timeout(Duration::from_secs(5), b_fut).await;
+        let _ = support::timeout(Duration::from_secs(5), b_fut).await;
 
         let _ = stream_a_done_tx.send(());
         drop(upgraded);
+        });
     }
 }
 

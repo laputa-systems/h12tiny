@@ -3,7 +3,6 @@
 
 use std::future::Future;
 use std::io::{self, Read, Write};
-use std::net::TcpListener as StdTcpListener;
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,15 +21,14 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::rt::Timer;
 use hyper::rt::{Read as AsyncRead, Write as AsyncWrite};
-use support::{TokioExecutor, TokioIo, TokioTimer};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream};
+use support::{DuplexStream, FuturesIo, HyperIo, SmolExecutor, SmolTimer};
+use smol::io::{AsyncReadExt, AsyncWriteExt};
+use smol::net::{TcpListener, TcpListener as TkTcpListener, TcpStream as TkTcpStream};
 
 use hyper::body::{Body, Incoming as IncomingBody};
 use hyper::server::conn::{http1, http2};
 use hyper::service::{service_fn, Service};
 use hyper::{Method, Request, Response, StatusCode, Uri, Version};
-use tokio::pin;
 
 mod support;
 
@@ -335,8 +333,9 @@ mod response_body_lengths {
         });
     }
 
-    #[tokio::test]
-    async fn http2_auto_response_with_known_length() {
+#[test]
+fn http2_auto_response_with_known_length() {
+    support::block_on(async {
         let server = serve_opts().http2().serve();
         let addr_str = format!("http://{}", server.addr());
         server.reply().body("Hello, World!");
@@ -349,10 +348,12 @@ mod response_body_lengths {
         let res = client.get(uri).await.unwrap();
         assert_eq!(res.headers().get("content-length").unwrap(), "13");
         assert_eq!(res.body().size_hint().exact(), Some(13));
-    }
+    });
+}
 
-    #[tokio::test]
-    async fn http2_auto_response_with_conflicting_lengths() {
+#[test]
+fn http2_auto_response_with_conflicting_lengths() {
+    support::block_on(async {
         let server = serve_opts().http2().serve();
         let addr_str = format!("http://{}", server.addr());
         server
@@ -368,10 +369,12 @@ mod response_body_lengths {
         let res = client.get(uri).await.unwrap();
         assert_eq!(res.headers().get("content-length").unwrap(), "10");
         assert_eq!(res.body().size_hint().exact(), Some(10));
-    }
+    });
+}
 
-    #[tokio::test]
-    async fn http2_implicit_empty_size_hint() {
+#[test]
+fn http2_implicit_empty_size_hint() {
+    support::block_on(async {
         let server = serve_opts().http2().serve();
         let addr_str = format!("http://{}", server.addr());
         server.reply();
@@ -384,7 +387,8 @@ mod response_body_lengths {
         let res = client.get(uri).await.unwrap();
         assert_eq!(res.headers().get("content-length"), None);
         assert_eq!(res.body().size_hint().exact(), Some(0));
-    }
+    });
+}
 }
 
 #[test]
@@ -1009,7 +1013,7 @@ fn setup_duplex_test_server() -> (DuplexStream, DuplexStream, SocketAddr) {
     let _ = pretty_env_logger::try_init();
 
     const BUF_SIZE: usize = 1024;
-    let (ioa, iob) = tokio::io::duplex(BUF_SIZE);
+    let (ioa, iob) = support::duplex(BUF_SIZE);
 
     /// A test address inside the 'documentation' address range.
     /// See: <https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml>
@@ -1019,8 +1023,9 @@ fn setup_duplex_test_server() -> (DuplexStream, DuplexStream, SocketAddr) {
     (ioa, iob, TEST_SOCKET)
 }
 
-#[tokio::test]
-async fn expect_continue_waits_for_body_poll() {
+#[test]
+fn expect_continue_waits_for_body_poll() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     let child = thread::spawn(move || {
@@ -1046,7 +1051,7 @@ async fn expect_continue_waits_for_body_poll() {
     });
 
     let (socket, _) = listener.accept().await.expect("accept");
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
 
     http1::Builder::new()
         .serve_connection(
@@ -1055,7 +1060,7 @@ async fn expect_continue_waits_for_body_poll() {
                 assert_eq!(req.headers()["expect"], "100-continue");
                 // But! We're never going to poll the body!
                 drop(req);
-                TokioTimer.sleep(Duration::from_millis(50)).map(move |_| {
+                SmolTimer.sleep(Duration::from_millis(50)).map(move |_| {
                     Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(Empty::<Bytes>::new())
@@ -1066,6 +1071,7 @@ async fn expect_continue_waits_for_body_poll() {
         .expect("serve_connection");
 
     child.join().expect("client thread");
+    });
 }
 
 #[test]
@@ -1202,13 +1208,14 @@ fn http_11_uri_too_long() {
     assert_eq!(s(&buf[..expected.len()]), expected);
 }
 
-#[tokio::test]
-async fn disable_keep_alive_mid_request() {
+#[test]
+fn disable_keep_alive_mid_request() {
+    support::block_on(async {
     let (client_io, server_io, _) = setup_duplex_test_server();
     let (tx1, rx1) = oneshot::channel();
     let (tx2, rx2) = oneshot::channel();
 
-    let client_task = tokio::spawn(async move {
+    let client_task = smol::spawn(async move {
         let mut client_io = client_io;
         // Send partial request
         client_io.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
@@ -1237,7 +1244,7 @@ async fn disable_keep_alive_mid_request() {
         );
     });
 
-    let server_io = TokioIo::new(server_io);
+    let server_io = FuturesIo::new(server_io);
     let srv = http1::Builder::new().serve_connection(server_io, HelloWorld);
     future::try_select(srv, rx1)
         .then(|r| match r {
@@ -1253,11 +1260,13 @@ async fn disable_keep_alive_mid_request() {
         .await
         .unwrap();
 
-    client_task.await.unwrap();
+    client_task.await;
+    });
 }
 
-#[tokio::test]
-async fn disable_keep_alive_post_request() {
+#[test]
+fn disable_keep_alive_post_request() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let (tx1, rx1) = oneshot::channel();
 
@@ -1285,7 +1294,7 @@ async fn disable_keep_alive_post_request() {
     let dropped2 = dropped.clone();
     let (socket, _) = listener.accept().await.unwrap();
     let transport = DebugStream {
-        stream: TokioIo::new(socket),
+        stream: FuturesIo::new(socket),
         _debug: dropped2,
     };
     let server = http1::Builder::new().serve_connection(transport, HelloWorld);
@@ -1303,10 +1312,12 @@ async fn disable_keep_alive_post_request() {
     fut.await.unwrap();
     assert!(dropped.load());
     child.join().unwrap();
+    });
 }
 
-#[tokio::test]
-async fn http1_graceful_shutdown_after_upgrade() {
+#[test]
+fn http1_graceful_shutdown_after_upgrade() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let (read_101_tx, read_101_rx) = oneshot::channel();
 
@@ -1345,7 +1356,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
 
     let mut conn = http1::Builder::new()
         .serve_connection(socket, svc)
@@ -1358,31 +1369,35 @@ async fn http1_graceful_shutdown_after_upgrade() {
     read_101_rx.await.unwrap();
 
     let upgraded = on_upgrade.await.expect("on_upgrade");
-    let parts = upgraded.downcast::<TokioIo<TkTcpStream>>().unwrap();
+    let parts = upgraded.downcast::<FuturesIo<TkTcpStream>>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
-    pin!(conn);
+    let mut conn = std::pin::pin!(conn);
     // graceful shutdown doesn't cause issues or panic. It should be ignored after upgrade
     conn.as_mut().graceful_shutdown();
+    });
 }
 
-#[tokio::test]
-async fn empty_parse_eof_does_not_return_error() {
+#[test]
+fn empty_parse_eof_does_not_return_error() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     thread::spawn(move || {
         let _tcp = connect(&addr);
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(socket, HelloWorld)
         .await
         .expect("empty parse eof is ok");
+    });
 }
 
-#[tokio::test]
-async fn nonempty_parse_eof_returns_error() {
+#[test]
+fn nonempty_parse_eof_returns_error() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1391,16 +1406,18 @@ async fn nonempty_parse_eof_returns_error() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("partial parse eof is error");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn http1_allow_half_close() {
+#[test]
+fn http1_allow_half_close() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     let t1 = thread::spawn(move || {
@@ -1415,13 +1432,13 @@ async fn http1_allow_half_close() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .half_close(true)
         .serve_connection(
             socket,
             service_fn(|_| {
-                TokioTimer
+                SmolTimer
                     .sleep(Duration::from_millis(500))
                     .map(|_| Ok::<_, hyper::Error>(Response::new(Empty::<Bytes>::new())))
             }),
@@ -1430,11 +1447,13 @@ async fn http1_allow_half_close() {
         .unwrap();
 
     t1.join().expect("client thread");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn disconnect_after_reading_request_before_responding() {
+#[test]
+fn disconnect_after_reading_request_before_responding() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1443,13 +1462,13 @@ async fn disconnect_after_reading_request_before_responding() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .half_close(false)
         .serve_connection(
             socket,
             service_fn(|_| {
-                TokioTimer.sleep(Duration::from_secs(2)).map(
+                SmolTimer.sleep(Duration::from_secs(2)).map(
                     |_| -> Result<Response<IncomingBody>, hyper::Error> {
                         panic!("response future should have been dropped");
                     },
@@ -1458,10 +1477,12 @@ async fn disconnect_after_reading_request_before_responding() {
         )
         .await
         .expect_err("socket disconnected");
+    });
 }
 
-#[tokio::test]
-async fn returning_1xx_response_is_error() {
+#[test]
+fn returning_1xx_response_is_error() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1475,7 +1496,7 @@ async fn returning_1xx_response_is_error() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(
             socket,
@@ -1490,6 +1511,7 @@ async fn returning_1xx_response_is_error() {
         )
         .await
         .expect_err("1xx status code should error");
+    });
 }
 
 #[test]
@@ -1509,8 +1531,9 @@ fn header_name_too_long() {
     assert!(s(&buf[..n]).starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
 }
 
-#[tokio::test]
-async fn header_read_timeout_slow_writes() {
+#[test]
+fn header_read_timeout_slow_writes() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1539,9 +1562,9 @@ async fn header_read_timeout_slow_writes() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     let conn = http1::Builder::new()
-        .timer(TokioTimer)
+        .timer(SmolTimer)
         .header_read_timeout(Duration::from_secs(5))
         .serve_connection(
             socket,
@@ -1554,10 +1577,12 @@ async fn header_read_timeout_slow_writes() {
             }),
         );
     conn.without_shutdown().await.expect_err("header timeout");
+    });
 }
 
-#[tokio::test]
-async fn header_read_timeout_starts_immediately() {
+#[test]
+fn header_read_timeout_starts_immediately() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1569,16 +1594,18 @@ async fn header_read_timeout_starts_immediately() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     let conn = http1::Builder::new()
-        .timer(TokioTimer)
+        .timer(SmolTimer)
         .header_read_timeout(Duration::from_secs(2))
         .serve_connection(socket, unreachable_service());
     assert!(conn.await.unwrap_err().is_timeout());
+    });
 }
 
-#[tokio::test]
-async fn header_read_timeout_slow_writes_multiple_requests() {
+#[test]
+fn header_read_timeout_slow_writes_multiple_requests() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1636,9 +1663,9 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     let conn = http1::Builder::new()
-        .timer(TokioTimer)
+        .timer(SmolTimer)
         .header_read_timeout(Duration::from_secs(5))
         .serve_connection(
             socket,
@@ -1651,10 +1678,12 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
             }),
         );
     assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
+    });
 }
 
-#[tokio::test]
-async fn header_read_timeout_as_idle_timeout() {
+#[test]
+fn header_read_timeout_as_idle_timeout() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -1680,9 +1709,9 @@ async fn header_read_timeout_as_idle_timeout() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     let conn = http1::Builder::new()
-        .timer(TokioTimer)
+        .timer(SmolTimer)
         .header_read_timeout(Duration::from_secs(3))
         .serve_connection(
             socket,
@@ -1695,10 +1724,12 @@ async fn header_read_timeout_as_idle_timeout() {
             }),
         );
     assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
+    });
 }
 
-#[tokio::test]
-async fn upgrades() {
+#[test]
+fn upgrades() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let (tx, rx) = oneshot::channel();
 
@@ -1727,7 +1758,7 @@ async fn upgrades() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     let conn = http1::Builder::new().serve_connection(
         socket,
         service_fn(|_| {
@@ -1751,10 +1782,12 @@ async fn upgrades() {
     let mut vec = vec![];
     io.read_to_end(&mut vec).await.unwrap();
     assert_eq!(vec, b"bar=foo");
+    });
 }
 
-#[tokio::test]
-async fn http_connect() {
+#[test]
+fn http_connect() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let (tx, rx) = oneshot::channel();
 
@@ -1781,7 +1814,7 @@ async fn http_connect() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     let conn = http1::Builder::new().serve_connection(
         socket,
         service_fn(|_| {
@@ -1804,11 +1837,13 @@ async fn http_connect() {
     let mut vec = vec![];
     io.read_to_end(&mut vec).await.unwrap();
     assert_eq!(vec, b"bar=foo");
+    });
 }
 
-#[tokio::test]
-async fn upgrades_new() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[test]
+fn upgrades_new() {
+    support::block_on(async {
+    use smol::io::{AsyncReadExt, AsyncWriteExt};
 
     let (listener, addr) = setup_tcp_listener();
     let (read_101_tx, read_101_rx) = oneshot::channel();
@@ -1852,7 +1887,7 @@ async fn upgrades_new() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(socket, svc)
         .with_upgrades()
@@ -1865,7 +1900,7 @@ async fn upgrades_new() {
     read_101_rx.await.unwrap();
 
     let upgraded = on_upgrade.await.expect("on_upgrade");
-    let parts = upgraded.downcast::<TokioIo<TkTcpStream>>().unwrap();
+    let parts = upgraded.downcast::<FuturesIo<TkTcpStream>>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
     let mut io = parts.io.inner();
@@ -1873,13 +1908,15 @@ async fn upgrades_new() {
     let mut vec = vec![];
     io.read_to_end(&mut vec).await.unwrap();
     assert_eq!(s(&vec), "bar=foo");
+    });
 }
 
-#[tokio::test]
-async fn upgrades_ignored() {
+#[test]
+fn upgrades_ignored() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let svc = service_fn(move |req: Request<IncomingBody>| {
             assert_eq!(req.headers()["upgrade"], "yolo");
             future::ok::<_, hyper::Error>(Response::new(Empty::<Bytes>::new()))
@@ -1887,16 +1924,16 @@ async fn upgrades_ignored() {
 
         loop {
             let (socket, _) = listener.accept().await.unwrap();
-            let socket = TokioIo::new(socket);
-            tokio::task::spawn(async move {
+            let socket = FuturesIo::new(socket);
+            smol::spawn(async move {
                 http1::Builder::new()
                     .serve_connection(socket, svc)
                     .with_upgrades()
                     .await
                     .expect("server task");
-            });
+            }).detach();
         }
-    });
+    }).detach();
 
     let client = TestClient::new();
     let url = format!("http://{}/", addr);
@@ -1916,10 +1953,12 @@ async fn upgrades_ignored() {
 
     let res2 = client.request(make_req()).await.expect("req 2");
     assert_eq!(res2.status(), 200);
+    });
 }
 
-#[tokio::test]
-async fn http_connect_new() {
+#[test]
+fn http_connect_new() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let (read_200_tx, read_200_rx) = oneshot::channel();
 
@@ -1958,7 +1997,7 @@ async fn http_connect_new() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(socket, svc)
         .with_upgrades()
@@ -1971,7 +2010,7 @@ async fn http_connect_new() {
     read_200_rx.await.unwrap();
 
     let upgraded = on_upgrade.await.expect("on_upgrade");
-    let parts = upgraded.downcast::<TokioIo<TkTcpStream>>().unwrap();
+    let parts = upgraded.downcast::<FuturesIo<TkTcpStream>>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
     let mut io = parts.io.inner();
@@ -1979,17 +2018,19 @@ async fn http_connect_new() {
     let mut vec = vec![];
     io.read_to_end(&mut vec).await.unwrap();
     assert_eq!(s(&vec), "bar=foo");
+    });
 }
 
-#[tokio::test]
-async fn h2_connect() {
+#[test]
+fn h2_connect() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
     let (h2, connection) = h2::client::handshake(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     async fn connect_and_recv_bread(
@@ -2008,27 +2049,27 @@ async fn h2_connect() {
         (body, send_stream)
     }
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (mut recv_stream, mut send_stream) = connect_and_recv_bread(&mut h2).await;
 
         send_stream.send_data("Baguette!".into(), true).unwrap();
 
         assert!(recv_stream.data().await.unwrap().unwrap().is_empty());
-    });
+    }).detach();
 
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
             upgraded.write_all(b"Bread?").await.unwrap();
 
             let mut vec = vec![];
             upgraded.read_to_end(&mut vec).await.unwrap();
             assert_eq!(s(&vec), "Baguette!");
 
-            upgraded.shutdown().await.unwrap();
-        });
+            upgraded.close().await.unwrap();
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2039,16 +2080,18 @@ async fn h2_connect() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
         .unwrap();
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_multiplex() {
+#[test]
+fn h2_connect_multiplex() {
+    support::block_on(async {
     use futures_util::stream::FuturesUnordered;
     use futures_util::StreamExt;
 
@@ -2056,12 +2099,12 @@ async fn h2_connect_multiplex() {
     let conn = connect_async(addr).await;
 
     let (h2, connection) = h2::client::handshake(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let mut streams = vec![];
         for i in 0..80 {
             let request = Request::connect(format!("localhost_{}", i % 4))
@@ -2101,19 +2144,19 @@ async fn h2_connect_multiplex() {
             .collect::<FuturesUnordered<_>>();
 
         futures.for_each(future::ready).await;
-    });
+    }).detach();
 
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let authority = req.uri().authority().unwrap().to_string();
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
+        smol::spawn(async move {
             let upgrade_res = on_upgrade.await;
             if authority == "localhost_0" {
                 assert!(upgrade_res.expect_err("upgrade cancelled").is_canceled());
                 return;
             }
-            let mut upgraded = TokioIo::new(upgrade_res.expect("upgrade successful"));
+            let mut upgraded = HyperIo::new(upgrade_res.expect("upgrade successful"));
 
             upgraded.write_all(b"Bread?").await.unwrap();
 
@@ -2137,8 +2180,8 @@ async fn h2_connect_multiplex() {
             read_res.unwrap();
             assert_eq!(s(&vec), "Baguette!");
 
-            upgraded.shutdown().await.unwrap();
-        });
+            upgraded.close().await.unwrap();
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2149,23 +2192,25 @@ async fn h2_connect_multiplex() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
         .unwrap();
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_large_body() {
+#[test]
+fn h2_connect_large_body() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
     let (h2, connection) = h2::client::handshake(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     const NO_BREAD: &str = "All work and no bread makes nox a dull boy.\n";
@@ -2186,7 +2231,7 @@ async fn h2_connect_large_body() {
         (body, send_stream)
     }
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (mut recv_stream, mut send_stream) = connect_and_recv_bread(&mut h2).await;
 
         let large_body = Bytes::from(NO_BREAD.repeat(9000));
@@ -2195,13 +2240,13 @@ async fn h2_connect_large_body() {
         send_stream.send_data(large_body, true).unwrap();
 
         assert!(recv_stream.data().await.unwrap().unwrap().is_empty());
-    });
+    }).detach();
 
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
             upgraded.write_all(b"Bread?").await.unwrap();
 
             let mut vec = vec![];
@@ -2210,8 +2255,8 @@ async fn h2_connect_large_body() {
             }
             assert_eq!(vec.len(), NO_BREAD.len() * 9000 * 2);
 
-            upgraded.shutdown().await.unwrap();
-        });
+            upgraded.close().await.unwrap();
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2222,23 +2267,25 @@ async fn h2_connect_large_body() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
         .unwrap();
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_empty_frames() {
+#[test]
+fn h2_connect_empty_frames() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
     let (h2, connection) = h2::client::handshake(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     async fn connect_and_recv_bread(
@@ -2257,7 +2304,7 @@ async fn h2_connect_empty_frames() {
         (body, send_stream)
     }
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (mut recv_stream, mut send_stream) = connect_and_recv_bread(&mut h2).await;
 
         send_stream.send_data("".into(), false).unwrap();
@@ -2267,21 +2314,21 @@ async fn h2_connect_empty_frames() {
         send_stream.send_data("".into(), true).unwrap();
 
         assert!(recv_stream.data().await.unwrap().unwrap().is_empty());
-    });
+    }).detach();
 
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
             upgraded.write_all(b"Bread?").await.unwrap();
 
             let mut vec = vec![];
             upgraded.read_to_end(&mut vec).await.unwrap();
             assert_eq!(s(&vec), "Baguette!");
 
-            upgraded.shutdown().await.unwrap();
-        });
+            upgraded.close().await.unwrap();
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2292,16 +2339,18 @@ async fn h2_connect_empty_frames() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         //.with_upgrades()
         .await
         .unwrap();
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_backpressure_respected() {
+#[test]
+fn h2_connect_backpressure_respected() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
@@ -2309,15 +2358,15 @@ async fn h2_connect_backpressure_respected() {
     builder.initial_window_size(1024);
     builder.initial_connection_window_size(1024);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     const CHUNK: &[u8] = b"backpressure test data chunk!\n";
     const TOTAL_LEN: usize = CHUNK.len() * 2000;
 
-    let client_handle = tokio::spawn(async move {
+    let client_handle = smol::spawn(async move {
         let request = Request::connect("localhost").body(()).unwrap();
         let (response, _send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
@@ -2342,15 +2391,15 @@ async fn h2_connect_backpressure_respected() {
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
 
             for _ in 0..2000 {
                 upgraded.write_all(CHUNK).await.unwrap();
             }
 
-            upgraded.shutdown().await.unwrap();
-        });
+            upgraded.close().await.unwrap();
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2361,31 +2410,33 @@ async fn h2_connect_backpressure_respected() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         .await
         .unwrap();
 
-    client_handle.await.unwrap();
+    client_handle.await;
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_zero_window_then_release() {
+#[test]
+fn h2_connect_zero_window_then_release() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
     let mut builder = h2::client::Builder::new();
     builder.initial_window_size(65535);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     const DATA: &[u8] = b"Hello from upgraded stream";
 
-    let client_handle = tokio::spawn(async move {
+    let client_handle = smol::spawn(async move {
         let request = Request::connect("localhost").body(()).unwrap();
         let (response, _send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
@@ -2410,11 +2461,11 @@ async fn h2_connect_zero_window_then_release() {
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
             upgraded.write_all(DATA).await.unwrap();
-            upgraded.shutdown().await.unwrap();
-        });
+            upgraded.close().await.unwrap();
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2425,17 +2476,19 @@ async fn h2_connect_zero_window_then_release() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         .await
         .unwrap();
 
-    client_handle.await.unwrap();
+    client_handle.await;
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_shutdown_while_send_backpressured() {
+#[test]
+fn h2_connect_shutdown_while_send_backpressured() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
@@ -2443,15 +2496,15 @@ async fn h2_connect_shutdown_while_send_backpressured() {
     builder.initial_window_size(1024);
     builder.initial_connection_window_size(1024);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let _ = connection.await;
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<bool>();
     let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
 
-    let client_handle = tokio::spawn(async move {
+    let client_handle = smol::spawn(async move {
         let request = Request::connect("localhost").body(()).unwrap();
         let (response, _send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
@@ -2475,21 +2528,21 @@ async fn h2_connect_shutdown_while_send_backpressured() {
         let on_upgrade = hyper::upgrade::on(req);
         let shutdown_tx = shutdown_tx.clone();
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
             upgraded.write_all(&[b'x'; 1024]).await.unwrap();
 
             // Regression trigger: shutdown closes the mpsc sender while the
             // send task is already parked waiting for h2 capacity.
             let shutdown_completed =
-                tokio::time::timeout(Duration::from_secs(1), upgraded.shutdown())
+                support::timeout(Duration::from_secs(1), upgraded.close())
                     .await
-                    .is_ok();
+                    .is_some();
 
             if let Some(tx) = shutdown_tx.lock().unwrap().take() {
                 let _ = tx.send(shutdown_completed);
             }
-        });
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2500,16 +2553,18 @@ async fn h2_connect_shutdown_while_send_backpressured() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    let _ = http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    let _ = http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         .await;
 
-    client_handle.await.unwrap();
+    client_handle.await;
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_reset_during_backpressure() {
+#[test]
+fn h2_connect_reset_during_backpressure() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
@@ -2517,9 +2572,9 @@ async fn h2_connect_reset_during_backpressure() {
     builder.initial_window_size(1024);
     builder.initial_connection_window_size(1024);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let _ = connection.await;
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     let (write_err_tx, write_err_rx) = oneshot::channel::<bool>();
@@ -2527,7 +2582,7 @@ async fn h2_connect_reset_during_backpressure() {
     let (reset_tx, reset_rx) = oneshot::channel::<()>();
     let reset_rx = Arc::new(Mutex::new(Some(reset_rx)));
 
-    let client_handle = tokio::spawn(async move {
+    let client_handle = smol::spawn(async move {
         let request = Request::connect("localhost").body(()).unwrap();
         let (response, mut send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
@@ -2555,8 +2610,8 @@ async fn h2_connect_reset_during_backpressure() {
         let write_err_tx = write_err_tx.clone();
         let reset_rx = reset_rx.clone();
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
             upgraded.write_all(&[b'x'; 1024]).await.unwrap();
 
             let reset_rx = reset_rx.lock().unwrap().take().unwrap();
@@ -2564,12 +2619,12 @@ async fn h2_connect_reset_during_backpressure() {
 
             let large_data = vec![b'x'; 1024 * 1024];
             let write = upgraded.write_all(&large_data).await;
-            let shutdown = upgraded.shutdown().await;
+            let shutdown = upgraded.close().await;
 
             if let Some(tx) = write_err_tx.lock().unwrap().take() {
                 let _ = tx.send(write.is_err() || shutdown.is_err());
             }
-        });
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2580,16 +2635,18 @@ async fn h2_connect_reset_during_backpressure() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    let _ = http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    let _ = http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         .await;
 
-    client_handle.await.unwrap();
+    client_handle.await;
+    });
 }
 
-#[tokio::test]
-async fn h2_connect_backpressure_bidirectional() {
+#[test]
+fn h2_connect_backpressure_bidirectional() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
@@ -2597,16 +2654,16 @@ async fn h2_connect_backpressure_bidirectional() {
     builder.initial_window_size(2048);
     builder.initial_connection_window_size(4096);
     let (h2, connection) = builder.handshake::<_, Bytes>(conn).await.unwrap();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         connection.await.unwrap();
-    });
+    }).detach();
     let mut h2 = h2.ready().await.unwrap();
 
     const PATTERN: &[u8] = b"All work and no bread makes nox a dull boy.\n";
     const REPEAT: usize = 500;
     let expected_len = PATTERN.len() * REPEAT;
 
-    let client_handle = tokio::spawn(async move {
+    let client_handle = smol::spawn(async move {
         let request = Request::connect("localhost").body(()).unwrap();
         let (response, mut send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
@@ -2633,19 +2690,19 @@ async fn h2_connect_backpressure_bidirectional() {
     let svc = service_fn(move |req: Request<IncomingBody>| {
         let on_upgrade = hyper::upgrade::on(req);
 
-        tokio::spawn(async move {
-            let mut upgraded = TokioIo::new(on_upgrade.await.expect("on_upgrade"));
+        smol::spawn(async move {
+            let mut upgraded = HyperIo::new(on_upgrade.await.expect("on_upgrade"));
 
             for _ in 0..REPEAT {
                 upgraded.write_all(PATTERN).await.unwrap();
             }
 
-            upgraded.shutdown().await.unwrap();
+            upgraded.close().await.unwrap();
 
             let mut response_buf = vec![0u8; 64];
             let n = upgraded.read(&mut response_buf).await.unwrap();
             assert_eq!(&response_buf[..n], b"client done");
-        });
+        }).detach();
 
         future::ok::<_, hyper::Error>(
             Response::builder()
@@ -2656,17 +2713,19 @@ async fn h2_connect_backpressure_bidirectional() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
-    http2::Builder::new(TokioExecutor)
+    let socket = FuturesIo::new(socket);
+    http2::Builder::new(SmolExecutor)
         .serve_connection(socket, svc)
         .await
         .unwrap();
 
-    client_handle.await.unwrap();
+    client_handle.await;
+    });
 }
 
-#[tokio::test]
-async fn parse_errors_send_4xx_response() {
+#[test]
+fn parse_errors_send_4xx_response() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -2680,15 +2739,17 @@ async fn parse_errors_send_4xx_response() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("HTTP parse error");
+    });
 }
 
-#[tokio::test]
-async fn illegal_request_length_returns_400_response() {
+#[test]
+fn illegal_request_length_returns_400_response() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     thread::spawn(move || {
@@ -2703,11 +2764,12 @@ async fn illegal_request_length_returns_400_response() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("illegal Content-Length should error");
+    });
 }
 
 #[cfg(feature = "http1")]
@@ -2726,8 +2788,9 @@ fn max_buf_size_no_panic() {
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn max_buf_size() {
+#[test]
+fn max_buf_size() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     const MAX: usize = 16_000;
@@ -2744,17 +2807,19 @@ async fn max_buf_size() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .max_buf_size(MAX)
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("should TooLarge error");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn max_buf_size_split_header_boundary() {
+#[test]
+fn max_buf_size_split_header_boundary() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     const MAX: usize = 8192;
@@ -2776,17 +2841,19 @@ async fn max_buf_size_split_header_boundary() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .max_buf_size(MAX)
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("should TooLarge error");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn max_header_size_exceeded() {
+#[test]
+fn max_header_size_exceeded() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     const MAX_HEADER: usize = 512;
@@ -2805,17 +2872,19 @@ async fn max_header_size_exceeded() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .max_header_size(MAX_HEADER)
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("should TooLarge error");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn max_header_size_accepted() {
+#[test]
+fn max_header_size_accepted() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     const MAX_HEADER: usize = 512;
@@ -2832,17 +2901,19 @@ async fn max_header_size_accepted() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .max_header_size(MAX_HEADER)
         .serve_connection(socket, HelloWorld)
         .await
         .expect("should succeed");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn max_header_size_with_large_max_buf_size() {
+#[test]
+fn max_header_size_with_large_max_buf_size() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     const MAX_HEADER: usize = 512;
@@ -2862,39 +2933,42 @@ async fn max_header_size_with_large_max_buf_size() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
     http1::Builder::new()
         .max_buf_size(MAX_BUF)
         .max_header_size(MAX_HEADER)
         .serve_connection(socket, HelloWorld)
         .await
         .expect_err("should TooLarge error even with large max_buf_size");
+    });
 }
 
 #[cfg(feature = "http1")]
-#[tokio::test]
-async fn graceful_shutdown_before_first_request_no_block() {
+#[test]
+fn graceful_shutdown_before_first_request_no_block() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let socket = listener.accept().await.unwrap().0;
-        let socket = TokioIo::new(socket);
+        let socket = FuturesIo::new(socket);
 
         let future = http1::Builder::new().serve_connection(socket, HelloWorld);
-        pin!(future);
+        let mut future = std::pin::pin!(future);
         future.as_mut().graceful_shutdown();
 
         future.await.unwrap();
-    });
+    }).detach();
 
     let mut stream = TkTcpStream::connect(addr).await.unwrap();
 
     let mut buf = vec![];
 
-    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut buf))
+    support::timeout(Duration::from_secs(5), stream.read_to_end(&mut buf))
         .await
         .expect("timed out waiting for graceful shutdown")
         .expect("error receiving response");
+    });
 }
 
 #[test]
@@ -2954,8 +3028,9 @@ fn http1_only() {
     .unwrap_err();
 }
 
-#[tokio::test]
-async fn http2_service_error_sends_reset_reason() {
+#[test]
+fn http2_service_error_sends_reset_reason() {
+    support::block_on(async {
     use std::error::Error;
 
     let server = serve_opts().http2().serve();
@@ -2980,6 +3055,7 @@ async fn http2_service_error_sends_reset_reason() {
         .expect("downcast");
 
     assert_eq!(h2_err.reason(), Some(h2::Reason::INADEQUATE_SECURITY));
+    });
 }
 
 #[test]
@@ -3087,12 +3163,13 @@ fn no_implicit_zero_content_length_for_head_responses() {
     assert!(!response.contains("content-length:"));
 }
 
-#[tokio::test]
-async fn http2_keep_alive_detects_unresponsive_client() {
+#[test]
+fn http2_keep_alive_detects_unresponsive_client() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
     // Spawn a "client" conn that only reads until EOF
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let mut conn = connect_async(addr).await;
 
         // write h2 magic preface and settings frame
@@ -3117,13 +3194,13 @@ async fn http2_keep_alive_detects_unresponsive_client() {
                 break;
             }
         }
-    });
+    }).detach();
 
     let (socket, _) = listener.accept().await.expect("accept");
-    let socket = TokioIo::new(socket);
+    let socket = FuturesIo::new(socket);
 
-    let err = http2::Builder::new(TokioExecutor)
-        .timer(TokioTimer)
+    let err = http2::Builder::new(SmolExecutor)
+        .timer(SmolTimer)
         .keep_alive_interval(Duration::from_secs(1))
         .keep_alive_timeout(Duration::from_secs(1))
         .auto_date_header(true)
@@ -3132,75 +3209,80 @@ async fn http2_keep_alive_detects_unresponsive_client() {
         .expect_err("serve_connection should error");
 
     assert!(err.is_timeout());
+    });
 }
 
-#[tokio::test]
-async fn http2_keep_alive_with_responsive_client() {
+#[test]
+fn http2_keep_alive_with_responsive_client() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
-        let socket = TokioIo::new(socket);
+        let socket = FuturesIo::new(socket);
 
-        http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, HelloWorld)
             .await
             .expect("serve_connection");
-    });
+    }).detach();
 
-    let tcp = TokioIo::new(connect_async(addr).await);
-    let (mut client, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor)
+    let tcp = FuturesIo::new(connect_async(addr).await);
+    let (mut client, conn) = hyper::client::conn::http2::Builder::new(SmolExecutor)
         .handshake(tcp)
         .await
         .expect("http handshake");
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         conn.await.expect("client conn");
-    });
+    }).detach();
 
-    TokioTimer.sleep(Duration::from_secs(4)).await;
+    SmolTimer.sleep(Duration::from_secs(4)).await;
 
     let req = http::Request::new(Empty::<Bytes>::new());
     client.send_request(req).await.expect("client.send_request");
+    });
 }
 
-#[tokio::test]
-async fn http2_check_date_header_disabled() {
+#[test]
+fn http2_check_date_header_disabled() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
-        let socket = TokioIo::new(socket);
+        let socket = FuturesIo::new(socket);
 
-        http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .auto_date_header(false)
             .keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, HelloWorld)
             .await
             .expect("serve_connection");
-    });
+    }).detach();
 
-    let tcp = TokioIo::new(connect_async(addr).await);
-    let (mut client, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor)
+    let tcp = FuturesIo::new(connect_async(addr).await);
+    let (mut client, conn) = hyper::client::conn::http2::Builder::new(SmolExecutor)
         .handshake(tcp)
         .await
         .expect("http handshake");
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         conn.await.expect("client conn");
-    });
+    }).detach();
 
-    TokioTimer.sleep(Duration::from_secs(4)).await;
+    SmolTimer.sleep(Duration::from_secs(4)).await;
 
     let req = http::Request::new(Empty::<Bytes>::new());
     let resp = client.send_request(req).await.expect("client.send_request");
 
     assert!(resp.headers().get("Date").is_none());
+    });
 }
 
 fn is_ping_frame(buf: &[u8]) -> bool {
@@ -3234,22 +3316,23 @@ async fn write_pong_frame(conn: &mut TkTcpStream) {
     .expect("client pong");
 }
 
-#[tokio::test]
-async fn http2_keep_alive_count_server_pings() {
+#[test]
+fn http2_keep_alive_count_server_pings() {
+    support::block_on(async {
     let (listener, addr) = setup_tcp_listener();
 
-    tokio::spawn(async move {
+    smol::spawn(async move {
         let (socket, _) = listener.accept().await.expect("accept");
-        let socket = TokioIo::new(socket);
+        let socket = FuturesIo::new(socket);
 
-        http2::Builder::new(TokioExecutor)
-            .timer(TokioTimer)
+        http2::Builder::new(SmolExecutor)
+            .timer(SmolTimer)
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(socket, unreachable_service())
             .await
             .expect("serve_connection");
-    });
+    }).detach();
 
     // Spawn a "client" conn that only reads until EOF
     let mut conn = connect_async(addr).await;
@@ -3284,9 +3367,10 @@ async fn http2_keep_alive_count_server_pings() {
     };
 
     // Expect all pings to occurs under 5 seconds
-    tokio::time::timeout(Duration::from_secs(5), read_pings)
+    support::timeout(Duration::from_secs(5), read_pings)
         .await
         .expect("timed out waiting for pings");
+    });
 }
 
 #[test]
@@ -3926,12 +4010,17 @@ impl ServeOptions {
                         let trailers_tx = trailers_tx.clone();
                         let reply_rx = reply_rx.clone();
 
-                        tokio::select! {
-                            res = listener.accept() => {
+                        match future::select(
+                            std::pin::pin!(listener.accept()),
+                            std::pin::pin!(&mut shutdown_rx),
+                        )
+                        .await
+                        {
+                            Either::Left((res, _)) => {
                                 let (stream, _) = res.unwrap();
-                                let stream = TokioIo::new(stream);
+                                let stream = FuturesIo::new(stream);
 
-                                tokio::task::spawn(async move {
+                                smol::spawn(async move {
                                     let msg_tx = msg_tx.clone();
                                     let reply_rx = reply_rx.clone();
                                     let service = TestService {
@@ -3941,7 +4030,7 @@ impl ServeOptions {
                                     };
 
                                     if _options.http2 {
-                                        http2::Builder::new(TokioExecutor)
+                                        http2::Builder::new(SmolExecutor)
                                             .serve_connection(stream, service).await.unwrap();
                                     } else {
                                         http1::Builder::new()
@@ -3949,11 +4038,9 @@ impl ServeOptions {
                                             .pipeline_flush(_options.pipeline)
                                             .serve_connection(stream, service).await.unwrap();
                                     }
-                                });
+                                }).detach();
                             }
-                            _ = &mut shutdown_rx => {
-                                break;
-                            }
+                            Either::Right((_, _)) => break,
                         }
                     }
                 })
@@ -3984,9 +4071,7 @@ fn has_header(msg: &str, name: &str) -> bool {
 }
 
 fn tcp_bind(addr: &SocketAddr) -> std::io::Result<TcpListener> {
-    let std_listener = StdTcpListener::bind(addr).unwrap();
-    std_listener.set_nonblocking(true).unwrap();
-    TcpListener::from_std(std_listener)
+    smol::block_on(TcpListener::bind(addr))
 }
 
 fn read_until<R, F>(io: &mut R, func: F) -> io::Result<Vec<u8>>
@@ -4119,20 +4204,20 @@ impl TestClient {
         let host = req.uri().host().expect("uri has no host");
         let port = req.uri().port_u16().expect("uri has no port");
 
-        let stream = TokioIo::new(
+        let stream = FuturesIo::new(
             TkTcpStream::connect(format!("{}:{}", host, port))
                 .await
                 .unwrap(),
         );
 
         if self.http2_only {
-            let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor)
+            let (mut sender, conn) = hyper::client::conn::http2::Builder::new(SmolExecutor)
                 .handshake(stream)
                 .await
                 .unwrap();
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 conn.await.unwrap();
-            });
+            }).detach();
 
             sender.send_request(req).await
         } else {
@@ -4140,9 +4225,9 @@ impl TestClient {
                 .handshake(stream)
                 .await
                 .unwrap();
-            tokio::task::spawn(async move {
+            smol::spawn(async move {
                 conn.await.unwrap();
-            });
+            }).detach();
 
             sender.send_request(req).await
         }
