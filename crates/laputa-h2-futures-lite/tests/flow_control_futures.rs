@@ -2,35 +2,13 @@ use futures_lite::future::zip;
 use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use h2::client;
 use http::{Method, Request, StatusCode};
-use std::collections::VecDeque;
-use std::future::Future;
+use laputa_protocol_test_support::executor::block_on_with_limit;
+use laputa_protocol_test_support::pipe::BudgetPipe;
 use std::io;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Wake, Waker};
+use std::time::Duration;
 
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 const PAYLOAD_LEN: usize = 16_384;
-const POLL_BUDGET: usize = 10_000;
-
-struct NoopWake;
-
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
-}
-
-#[derive(Debug, Default)]
-struct Buffer {
-    bytes: VecDeque<u8>,
-    reader: Option<Waker>,
-    closed: bool,
-}
-
-#[derive(Debug)]
-struct Pipe {
-    incoming: Arc<Mutex<Buffer>>,
-    outgoing: Arc<Mutex<Buffer>>,
-}
 
 struct Frame {
     kind: u8,
@@ -39,107 +17,7 @@ struct Frame {
     payload: Vec<u8>,
 }
 
-impl Pipe {
-    fn pair() -> (Self, Self) {
-        let first_to_second = Arc::new(Mutex::new(Buffer::default()));
-        let second_to_first = Arc::new(Mutex::new(Buffer::default()));
-
-        (
-            Self {
-                incoming: second_to_first.clone(),
-                outgoing: first_to_second.clone(),
-            },
-            Self {
-                incoming: first_to_second,
-                outgoing: second_to_first,
-            },
-        )
-    }
-
-    fn close_write(&mut self) {
-        let wake = {
-            let mut outgoing = self.outgoing.lock().unwrap();
-            outgoing.closed = true;
-            outgoing.reader.take()
-        };
-
-        if let Some(waker) = wake {
-            waker.wake();
-        }
-    }
-}
-
-impl AsyncRead for Pipe {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        if buf.is_empty() {
-            return Poll::Ready(Ok(0));
-        }
-
-        let mut incoming = self.get_mut().incoming.lock().unwrap();
-        if incoming.bytes.is_empty() {
-            if incoming.closed {
-                return Poll::Ready(Ok(0));
-            }
-
-            incoming.reader = Some(cx.waker().clone());
-            return Poll::Pending;
-        }
-
-        let count = buf.len().min(incoming.bytes.len());
-        for byte in &mut buf[..count] {
-            *byte = incoming.bytes.pop_front().unwrap();
-        }
-
-        Poll::Ready(Ok(count))
-    }
-}
-
-impl AsyncWrite for Pipe {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let mut outgoing = self.get_mut().outgoing.lock().unwrap();
-        if outgoing.closed {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "peer closed",
-            )));
-        }
-
-        outgoing.bytes.extend(buf.iter().copied());
-        let wake = outgoing.reader.take();
-        drop(outgoing);
-
-        if let Some(waker) = wake {
-            waker.wake();
-        }
-
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.close_write();
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl Drop for Pipe {
-    fn drop(&mut self) {
-        self.close_write();
-    }
-}
-
-async fn read_frame(io: &mut Pipe) -> io::Result<Frame> {
+async fn read_frame<T: AsyncRead + Unpin>(io: &mut T) -> io::Result<Frame> {
     let mut header = [0; 9];
     io.read_exact(&mut header).await?;
 
@@ -159,7 +37,7 @@ async fn read_frame(io: &mut Pipe) -> io::Result<Frame> {
     })
 }
 
-async fn write_data(io: &mut Pipe, end_stream: bool) {
+async fn write_data<T: AsyncWrite + Unpin>(io: &mut T, end_stream: bool) {
     let mut frame = Vec::with_capacity(9 + PAYLOAD_LEN);
     frame.extend_from_slice(&[
         (PAYLOAD_LEN >> 16) as u8,
@@ -178,7 +56,7 @@ async fn write_data(io: &mut Pipe, end_stream: bool) {
 
 #[test]
 fn release_capacity_sends_both_window_updates_and_allows_more_data() {
-    let (client_io, mut peer_io) = Pipe::pair();
+    let (client_io, mut peer_io) = BudgetPipe::pair(usize::MAX);
 
     let peer = async move {
         let mut preface = [0; 24];
@@ -263,15 +141,6 @@ fn release_capacity_sends_both_window_updates_and_allows_more_data() {
         connection.unwrap();
     };
 
-    let mut exchange = Box::pin(zip(peer, client));
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut cx = Context::from_waker(&waker);
-
-    for _ in 0..POLL_BUDGET {
-        if exchange.as_mut().poll(&mut cx).is_ready() {
-            return;
-        }
-    }
-
-    panic!("flow-control exchange stalled after {POLL_BUDGET} polls");
+    block_on_with_limit(zip(peer, client), Duration::from_secs(2))
+        .expect("flow-control exchange completes without a lost wake");
 }

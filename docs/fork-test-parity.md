@@ -73,6 +73,14 @@ The fork corpus is the ledger denominator when it differs from upstream:
 - Every other inherited h2 test file and every inherited Hyper test file is
   byte-identical to the reference release.
 
+### Wake negative control
+
+On 2026-10-31, removing the reader wake from `BudgetPipe::poll_write` made
+`flow_control_futures` fail with
+`Stall { stats: Stats { polls: 2, wakes: 1 }, limit: 2s }` in 2.00 s instead
+of spinning. The patch was reverted. `wake_loss_is_detected` in the shared
+crate gates the same executor behavior without a patched dependency.
+
 ## Gate runs
 
 | Date | Commit | Host | Command | Result | Wall |
