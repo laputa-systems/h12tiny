@@ -28,8 +28,10 @@ pub use super::{
 pub use super::assert::assert_frame_eq;
 
 // Re-export useful crates
-pub use tokio_test::io as mock_io;
-pub use {bytes, futures, http, tokio::io as tokio_io, tracing, tracing_subscriber};
+pub use laputa_protocol_test_support::mock_io;
+pub use {bytes, futures, http, tracing, tracing_subscriber};
+pub use laputa_protocol_test_support::{block_on, block_on_with_limit, timer};
+pub use smol;
 
 // Re-export primary future types
 pub use futures::{Future, Sink, Stream};
@@ -45,10 +47,18 @@ pub use http::{uri, HeaderMap, Method, Request, Response, StatusCode, Version};
 
 pub use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-pub use tokio::io::{AsyncRead, AsyncWrite};
+pub use futures_io::{AsyncRead, AsyncWrite};
 
 pub use std::thread;
 pub use std::time::Duration;
+
+pub fn run<F: Future>(future: F) -> F::Output {
+    run_with_limit(future, Duration::from_secs(10))
+}
+
+pub fn run_with_limit<F: Future>(future: F, limit: Duration) -> F::Output {
+    block_on_with_limit(future, limit).unwrap_or_else(|stall| panic!("{}", stall))
+}
 
 pub static MAGIC_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -66,7 +76,7 @@ pub trait MockH2 {
     fn handshake_read_settings(&mut self, settings: &[u8]) -> &mut Self;
 }
 
-impl MockH2 for tokio_test::io::Builder {
+impl MockH2 for laputa_protocol_test_support::mock_io::Builder {
     fn handshake(&mut self) -> &mut Self {
         self.handshake_read_settings(frames::SETTINGS)
     }

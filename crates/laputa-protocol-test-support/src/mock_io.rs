@@ -96,17 +96,10 @@ impl fmt::Debug for Mock {
 
 impl Mock {
     fn flush_empty(&mut self) {
-        loop {
-            match self.actions.front() {
-                Some(Action::Read(data)) if data.is_empty() => {
-                    self.actions.pop_front();
-                }
-                Some(Action::Write(data)) if data.is_empty() => {
-                    self.actions.pop_front();
-                }
-                _ => break,
-            }
-        }
+        self.actions.retain(|action| match action {
+            Action::Read(data) | Action::Write(data) => !data.is_empty(),
+            _ => true,
+        });
     }
 
     fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<()> {
@@ -216,36 +209,45 @@ impl AsyncWrite for Mock {
             }
             self.flush_empty();
 
-            match self.actions.front_mut() {
-                Some(Action::Write(expected)) => {
-                    let count = buf.len().min(expected.len());
-                    assert_eq!(
-                        &buf[..count],
-                        &expected[..count],
-                        "mock script {} wrote unexpected bytes",
-                        name
-                    );
-                    expected.drain(..count);
-                    if expected.is_empty() {
-                        self.actions.pop_front();
+            let index = self.actions.iter().position(|action| {
+                matches!(
+                    action,
+                    Action::Write(_) | Action::WriteError(_) | Action::Wait(_)
+                )
+            });
+
+            match index {
+                Some(index) => match &mut self.actions[index] {
+                    Action::Write(expected) => {
+                        let count = buf.len().min(expected.len());
+                        assert_eq!(
+                            &buf[..count],
+                            &expected[..count],
+                            "mock script {} wrote unexpected bytes",
+                            name
+                        );
+                        expected.drain(..count);
+                        if expected.is_empty() {
+                            self.actions.remove(index);
+                        }
+                        self.wake_reader();
+                        return Poll::Ready(Ok(count));
                     }
-                    self.wake_reader();
-                    return Poll::Ready(Ok(count));
-                }
-                Some(Action::WriteError(error)) => {
-                    let error = error
-                        .take()
-                        .expect("a write error action is consumed once");
-                    self.actions.pop_front();
-                    self.wake_reader();
-                    return Poll::Ready(Err(error));
-                }
-                Some(Action::Read(_)) | Some(Action::ReadError(_)) => {
-                    self.write_wait = Some(cx.waker().clone());
-                    return Poll::Pending;
-                }
+                    Action::WriteError(error) => {
+                        let error = error
+                            .take()
+                            .expect("a write error action is consumed once");
+                        self.actions.remove(index);
+                        self.wake_reader();
+                        return Poll::Ready(Err(error));
+                    }
+                    Action::Wait(_) => {
+                        self.write_wait = Some(cx.waker().clone());
+                        return Poll::Pending;
+                    }
+                    _ => unreachable!("the scan stops at writes and waits"),
+                },
                 None => return Poll::Ready(Err(self.unexpected("write"))),
-                Some(Action::Wait(_)) => unreachable!("waits are consumed above"),
             }
         }
     }

@@ -4,10 +4,10 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::ReadBuf;
 
-#[tokio::test]
-async fn write_continuation_frames() {
+#[test]
+fn write_continuation_frames() {
+    h2_support::run(async {
     // An invalid dependency ID results in a stream level error. The hpack
     // payload should still be decoded.
     h2_support::trace_init!();
@@ -55,10 +55,12 @@ async fn write_continuation_frames() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn client_settings_header_table_size() {
+#[test]
+fn client_settings_header_table_size() {
+    h2_support::run(async {
     // A server sets the SETTINGS_HEADER_TABLE_SIZE to 0, test that the
     // client doesn't send indexed headers.
     h2_support::trace_init!();
@@ -98,10 +100,12 @@ async fn client_settings_header_table_size() {
 
     let req2 = client.get("https://http2.akamai.com");
     conn.drive(req2).await.expect("req1");
+    });
 }
 
-#[tokio::test]
-async fn server_settings_header_table_size() {
+#[test]
+fn server_settings_header_table_size() {
+    h2_support::run(async {
     // A client sets the SETTINGS_HEADER_TABLE_SIZE to 0, test that the
     // server doesn't send indexed headers.
     h2_support::trace_init!();
@@ -142,6 +146,7 @@ async fn server_settings_header_table_size() {
     stream.send_response(rsp, true).unwrap();
 
     assert!(srv.accept().await.is_none());
+    });
 }
 
 /// An IO wrapper whose `poll_write` returns `Ready(Ok(0))` once the flag is set.
@@ -154,8 +159,8 @@ impl<T: AsyncRead + Unpin> AsyncRead for ZeroWriteIo<T> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
@@ -176,14 +181,15 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for ZeroWriteIo<T> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
     }
 }
 
-#[tokio::test]
-async fn write_zero_returns_write_zero_err() {
-    use tokio::sync::oneshot;
+#[test]
+fn write_zero_returns_write_zero_err() {
+    h2_support::run(async {
+    use futures::channel::oneshot;
 
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -249,4 +255,5 @@ async fn write_zero_returns_write_zero_err() {
     };
 
     join(srv, client).await;
+    });
 }

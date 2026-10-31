@@ -16,6 +16,7 @@ mod future_ext;
 
 pub use crate::client_ext::SendRequestExt;
 pub use crate::future_ext::TestFuture;
+pub use crate::prelude::{run, run_with_limit};
 
 pub type WindowSize = usize;
 pub const DEFAULT_WINDOW_SIZE: WindowSize = (1 << 16) - 1;

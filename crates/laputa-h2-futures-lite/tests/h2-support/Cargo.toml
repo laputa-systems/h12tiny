@@ -7,13 +7,15 @@ edition = "2018"
 
 [dependencies]
 h2 = { package = "laputa-h2-futures-lite", path = "../..", features = ["stream", "unstable"] }
+laputa-protocol-test-support = { path = "../../../laputa-protocol-test-support" }
+smol = { package = "laputa-smol", version = "0.3.0" }
 
 atty = "0.2"
 bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 tracing-tree = "0.2"
-futures = { version = "0.3", default-features = false }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+futures-io = "0.3"
+futures-lite = { package = "laputa-futures-lite", version = "0.3.0", default-features = false, features = ["std"] }
 http = "1"
-tokio = { version = "1", features = ["time"] }
-tokio-test = "0.4"

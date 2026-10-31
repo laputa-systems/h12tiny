@@ -7,7 +7,7 @@ use h2::SendError;
 use futures::future::poll_fn;
 use futures::{ready, Stream, StreamExt};
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use futures_lite::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::assert::assert_frame_eq;
 use std::pin::Pin;
@@ -298,8 +298,8 @@ impl AsyncRead for Handle {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(self.codec.get_mut()).poll_read(cx, buf)
     }
 }
@@ -317,11 +317,11 @@ impl AsyncWrite for Handle {
         Pin::new(self.codec.get_mut()).poll_flush(cx)
     }
 
-    fn poll_shutdown(
+    fn poll_close(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        Pin::new(self.codec.get_mut()).poll_shutdown(cx)
+        Pin::new(self.codec.get_mut()).poll_close(cx)
     }
 }
 
@@ -348,10 +348,10 @@ impl AsyncRead for Mock {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         assert!(
-            buf.remaining() > 0,
+            !buf.is_empty(),
             "attempted read with zero length buffer... wut?"
         );
 
@@ -366,18 +366,18 @@ impl AsyncRead for Mock {
 
         if me.rx.is_empty() {
             if me.closed {
-                return Poll::Ready(Ok(()));
+                return Poll::Ready(Ok(0));
             }
 
             me.rx_task = Some(cx.waker().clone());
             return Poll::Pending;
         }
 
-        let n = cmp::min(buf.remaining(), me.rx.len());
-        buf.put_slice(&me.rx[..n]);
+        let n = cmp::min(buf.len(), me.rx.len());
+        buf[..n].copy_from_slice(&me.rx[..n]);
         me.rx.drain(..n);
 
-        Poll::Ready(Ok(()))
+        Poll::Ready(Ok(n))
     }
 }
 
@@ -416,7 +416,7 @@ impl AsyncWrite for Mock {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -438,10 +438,10 @@ impl AsyncRead for Pipe {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf,
-    ) -> Poll<io::Result<()>> {
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         assert!(
-            buf.remaining() > 0,
+            !buf.is_empty(),
             "attempted read with zero length buffer... wut?"
         );
 
@@ -449,18 +449,18 @@ impl AsyncRead for Pipe {
 
         if me.tx.is_empty() {
             if me.closed {
-                return Poll::Ready(Ok(()));
+                return Poll::Ready(Ok(0));
             }
 
             me.tx_task = Some(cx.waker().clone());
             return Poll::Pending;
         }
 
-        let n = cmp::min(buf.remaining(), me.tx.len());
-        buf.put_slice(&me.tx[..n]);
+        let n = cmp::min(buf.len(), me.tx.len());
+        buf[..n].copy_from_slice(&me.tx[..n]);
         me.tx.drain(..n);
 
-        Poll::Ready(Ok(()))
+        Poll::Ready(Ok(n))
     }
 }
 
@@ -484,11 +484,11 @@ impl AsyncWrite for Pipe {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         Poll::Ready(Ok(()))
     }
 }
 
 pub async fn idle_ms(ms: u64) {
-    tokio::time::sleep(Duration::from_millis(ms)).await
+    let _ = laputa_protocol_test_support::timer::sleep(Duration::from_millis(ms)).await;
 }

@@ -3,8 +3,9 @@ use futures::StreamExt;
 use h2_support::assert_ping;
 use h2_support::prelude::*;
 
-#[tokio::test]
-async fn recv_single_ping() {
+#[test]
+fn recv_single_ping() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (m, mut mock) = mock::new();
 
@@ -30,10 +31,12 @@ async fn recv_single_ping() {
     };
 
     join(mock, h2).await;
+    });
 }
 
-#[tokio::test]
-async fn recv_multiple_pings() {
+#[test]
+fn recv_multiple_pings() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -52,10 +55,12 @@ async fn recv_multiple_pings() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn pong_has_highest_priority() {
+#[test]
+fn pong_has_highest_priority() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
@@ -90,10 +95,12 @@ async fn pong_has_highest_priority() {
     };
 
     join(client, srv).await;
+    });
 }
 
-#[tokio::test]
-async fn user_ping_pong() {
+#[test]
+fn user_ping_pong() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
@@ -132,10 +139,12 @@ async fn user_ping_pong() {
     };
 
     join(srv, client).await;
+    });
 }
 
-#[tokio::test]
-async fn user_notifies_when_connection_closes() {
+#[test]
+fn user_notifies_when_connection_closes() {
+    h2_support::run(async {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
     let srv = async move {
@@ -160,12 +169,13 @@ async fn user_notifies_when_connection_closes() {
     // Spawn a thread so we can park a task waiting on `poll_pong`, and then
     // drop the client and be sure the parked task is notified...
     let (tx, rx) = oneshot::channel();
-    tokio::spawn(async move {
+    smol::spawn(async move {
         poll_fn(|cx| ping_pong.poll_pong(cx))
             .await
             .expect_err("poll_pong should error");
         tx.send(ping_pong).unwrap();
-    });
+    })
+    .detach();
 
     // Sleep to let the ping thread park its task...
     idle_ms(50).await;
@@ -182,4 +192,5 @@ async fn user_notifies_when_connection_closes() {
             .to_string(),
         "broken pipe",
     );
+    });
 }
