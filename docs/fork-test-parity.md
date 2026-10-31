@@ -46,7 +46,7 @@ Exclusion reasons:
 | Fork | Suite | Source file | Reference count | Ported | Excluded | Status | Command | Covering test |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | h2 | h2#975 bidirectional deadlock | `tests/h2-tests/tests/h2_975.rs` | 1 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml -p h2-tests --test h2_975` | self |
-| shared | wake loss detection | `crates/laputa-protocol-test-support` | 1 | 0 | 0 | not ported | `cargo test --manifest-path crates/laputa-protocol-test-support/Cargo.toml wake_loss_is_detected` | self |
+| shared | wake loss detection | `crates/laputa-protocol-test-support` | 1 | 1 | 0 | ported | `cargo test --manifest-path crates/laputa-protocol-test-support/Cargo.toml wake_loss_is_detected` | self |
 
 ## Reference inventory
 

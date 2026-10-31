@@ -8,7 +8,8 @@ cd "$root"
 
 mkdir -p "$root/.work/tmp"
 TMPDIR="$root/.work/tmp"
-export TMPDIR
+CARGO_TARGET_DIR="$root/.work/tmp/protocol-target"
+export TMPDIR CARGO_TARGET_DIR
 
 H2_MANIFEST="crates/laputa-h2-futures-lite/Cargo.toml"
 HYPER_MANIFEST="crates/laputa-hyper-futures-lite/Cargo.toml"

@@ -1,0 +1,13 @@
+[package]
+name = "laputa-protocol-test-support"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Futures-I/O test support for the Laputa protocol forks"
+publish = false
+
+[dependencies]
+async-io = { package = "laputa-async-io", version = "0.3.0" }
+futures-io = "0.3"
+futures-lite = { package = "laputa-futures-lite", version = "0.3.0", default-features = false, features = ["std"] }

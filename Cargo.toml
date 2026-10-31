@@ -23,6 +23,7 @@ exclude = [
     "crates/laputa-h2-futures-lite",
     "crates/laputa-hyper-futures-lite",
     "crates/laputa-fastwebsockets-futures-lite",
+    "crates/laputa-protocol-test-support",
 ]
 
 [workspace.dependencies]
