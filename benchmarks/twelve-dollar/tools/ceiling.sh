@@ -147,6 +147,13 @@ run_id="$(basename "$out")"
 
 mkdir -p "$out"
 probe_seq=0
+level_pid=""
+cleanup() {
+  if [ -n "$level_pid" ]; then kill -TERM "$level_pid" 2>/dev/null || true; wait "$level_pid" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 copy_harness() {
   local box_run="$1"
@@ -323,7 +330,10 @@ wait_for_gate() {
     cat "$gate_log" >&2
     if [ "$attempt" -lt "$GATE_ATTEMPTS" ]; then
       echo "ceiling: perf gate busy, retrying in ${GATE_RETRY_SECONDS}s (attempt $attempt of $GATE_ATTEMPTS)" >&2
-      sleep "$GATE_RETRY_SECONDS"
+      sleep "$GATE_RETRY_SECONDS" &
+      gate_sleep_pid=$!
+      wait "$gate_sleep_pid"
+      gate_sleep_pid=""
     fi
   done
   return 1
@@ -340,13 +350,16 @@ run_probe() {
     host_port=80
   fi
 
-  local dir box_run run_started_utc app_pid stats_pid=""
+  local dir box_run run_started_utc app_pid stats_pid="" k6_pid="" gate_sleep_pid="" k6_started=false
   dir="$out/$name"
   box_run="/runs/ceiling-$name"
   [ ! -e "$dir" ] || die "probe directory already exists: $dir"
   mkdir -p "$dir"
 
   cleanup_probe() {
+    if [ -n "$gate_sleep_pid" ]; then kill -TERM "$gate_sleep_pid" 2>/dev/null || true; wait "$gate_sleep_pid" 2>/dev/null || true; fi
+    if [ "$k6_started" = true ]; then docker rm --force "$K6_NAME" >/dev/null 2>&1 || true; fi
+    if [ -n "$k6_pid" ]; then kill -TERM "$k6_pid" 2>/dev/null || true; wait "$k6_pid" 2>/dev/null || true; fi
     if [ -n "${stats_pid:-}" ]; then
       touch "$dir/k6-stats.done" >/dev/null 2>&1 || true
       wait "$stats_pid" 2>/dev/null || true
@@ -356,6 +369,8 @@ run_probe() {
     docker exec "$BOX" rm -rf "$box_run" >/dev/null 2>&1 || true
   }
   trap cleanup_probe EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   copy_harness "$box_run" >&2
   docker exec "$BOX" sh -c ': > /var/log/nginx/bench.access.log; : > /var/log/nginx/bench.error.log'
@@ -415,7 +430,7 @@ run_probe() {
 
   local k6_started_ms k6_finished_ms k6_rc
   k6_started_ms="$(( $(date +%s) * 1000 ))"
-  set +e
+  k6_started=true
   docker run --rm \
     --name "$K6_NAME" \
     --network "$NET" \
@@ -432,9 +447,11 @@ run_probe() {
     "$K6_IMAGE" run \
     --no-thresholds \
     --summary-export "/runs/ceiling-$name/k6-summary.json" \
-    /challenge/bench/load.js > "$dir/k6.log" 2>&1
-  k6_rc=$?
-  set -e
+    /challenge/bench/load.js > "$dir/k6.log" 2>&1 &
+  k6_pid=$!
+  if wait "$k6_pid"; then k6_rc=0; else k6_rc=$?; fi
+  k6_pid=""
+  k6_started=false
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   local gate_after=false
@@ -646,12 +663,19 @@ run_probe() {
 
 probe_level() {
   local mode="$1" vus="$2" name="$3"
-  local attempt dir valid gate_after rc
+  local attempt dir valid gate_after rc probe_pid=""
+  cleanup_level() {
+    if [ -n "$probe_pid" ]; then kill -TERM "$probe_pid" 2>/dev/null || true; wait "$probe_pid" 2>/dev/null || true; fi
+  }
+  trap cleanup_level EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   for attempt in $(seq 1 "$GATE_ATTEMPTS"); do
-    set +e
-    dir="$(run_probe "$mode" "$vus" "$name-a$attempt")"
-    rc=$?
-    set -e
+    dir="$out/$name-a$attempt"
+    run_probe "$mode" "$vus" "$name-a$attempt" >/dev/null &
+    probe_pid=$!
+    if wait "$probe_pid"; then rc=0; else rc=$?; fi
+    probe_pid=""
     if [ "$rc" -eq 75 ]; then
       return 75
     fi
@@ -670,7 +694,10 @@ probe_level() {
     fi
     if [ "$attempt" -lt "$GATE_ATTEMPTS" ]; then
       echo "ceiling: probe overlapped load; retrying $mode at $vus VUs in ${GATE_RETRY_SECONDS}s" >&2
-      sleep "$GATE_RETRY_SECONDS"
+      sleep "$GATE_RETRY_SECONDS" &
+      probe_pid=$!
+      wait "$probe_pid"
+      probe_pid=""
     fi
   done
   return 75
@@ -685,14 +712,17 @@ run_mode() {
     levels=(25000 12500 6250 2500)
   fi
   local lowest_saturated="" last_valid="" ceiling="" outcome="" status=complete search_modified=false
-  local vus dir rc probe_saturated name
+  local vus dir rc probe_saturated name selected
   for vus in "${levels[@]}"; do
     probe_seq=$((probe_seq + 1))
     name="$(printf '%02d-%s-%05dvu' "$probe_seq" "$mode" "$vus")"
-    set +e
-    dir="$(probe_level "$mode" "$vus" "$name")"
-    rc=$?
-    set -e
+    selected="$out/.$name-selected"
+    probe_level "$mode" "$vus" "$name" > "$selected" &
+    level_pid=$!
+    if wait "$level_pid"; then rc=0; else rc=$?; fi
+    level_pid=""
+    dir="$(cat "$selected")"
+    rm -f "$selected"
     if [ "$rc" -ne 0 ]; then
       if [ "$rc" -eq 75 ]; then
         status=deferred
