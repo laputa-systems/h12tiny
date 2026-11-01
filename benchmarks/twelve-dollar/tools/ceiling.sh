@@ -568,9 +568,9 @@ run_probe() {
     --argjson http_reqs "$http_reqs" \
     --argjson http_reqs_stdout "$http_reqs_stdout" \
     --argjson throughput_req_s "$throughput" \
-    --argjson p50_s "$p50" \
-    --argjson p95_s "$p95" \
-    --argjson p99_s "$p99" \
+    --argjson p50_ms "$p50" \
+    --argjson p95_ms "$p95" \
+    --argjson p99_ms "$p99" \
     --argjson failure_rate "$failure_rate" \
     --argjson dropped_iterations "$dropped" \
     --argjson vus_max "$vus_max" \
@@ -600,9 +600,9 @@ run_probe() {
         http_reqs: $http_reqs,
         http_reqs_stdout: $http_reqs_stdout,
         throughput_req_s: $throughput_req_s,
-        p50_s: $p50_s,
-        p95_s: $p95_s,
-        p99_s: $p99_s,
+        p50_ms: $p50_ms,
+        p95_ms: $p95_ms,
+        p99_ms: $p99_ms,
         failure_rate: $failure_rate,
         dropped_iterations: $dropped_iterations,
         vus_max: $vus_max,

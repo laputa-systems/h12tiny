@@ -29,14 +29,10 @@ dropped="$(read_json '(.metrics.dropped_iterations.count // .metrics.dropped_ite
 vus_max="$(read_json '(.metrics.vus.max // .metrics.vus.value // .metrics.vus.values.max)' "$RUN_DIR/k6-summary.json")"
 k6_rc="$(read_json '.exit_code' "$RUN_DIR/k6-run.json")"
 
-duration_scale=1000
-if [ "$(jaq -r '.metrics.http_req_duration | has("values")' "$RUN_DIR/k6-summary.json")" = true ]; then
-  duration_scale=1
-fi
-p50="$(awk -v value="${p50_raw:-0}" -v scale="$duration_scale" 'BEGIN { printf "%.6f", value * scale }')"
-p95="$(awk -v value="${p95_raw:-0}" -v scale="$duration_scale" 'BEGIN { printf "%.6f", value * scale }')"
-p99="$(awk -v value="${p99_raw:-0}" -v scale="$duration_scale" 'BEGIN { printf "%.6f", value * scale }')"
-max_ms="$(awk -v value="${max_raw:-0}" -v scale="$duration_scale" 'BEGIN { printf "%.6f", value * scale }')"
+p50="${p50_raw:-0}"
+p95="${p95_raw:-0}"
+p99="${p99_raw:-0}"
+max_ms="${max_raw:-0}"
 
 k6_stdout_count="$(awk '/^[[:space:]]*http_reqs\.+:/ { sub(/^.*:[[:space:]]*/, ""); print $1; exit }' "$RUN_DIR/k6.log")"
 nginx_lines="$(wc -l < "$RUN_DIR/nginx-access.log" | tr -d ' ')"
