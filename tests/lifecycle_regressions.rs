@@ -49,45 +49,77 @@ impl Service<Request<Incoming>> for H2Service {
 #[cfg(all(feature = "server", feature = "http2"))]
 #[test]
 fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_net::TcpStream;
+    use h12tiny::client::{Connector, TcpConnected, TcpDialFuture, TcpDialer};
+
+    #[derive(Clone)]
+    struct FailFirstDialTcpDialer {
+        calls: Arc<AtomicUsize>,
+        fail: Arc<std::sync::Mutex<Option<oneshot::Receiver<()>>>>,
+    }
+
+    impl TcpDialer for FailFirstDialTcpDialer {
+        fn connect(&self, origin: http::Uri, _: h12tiny::client::RequestOptions) -> TcpDialFuture {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                let fail = self
+                    .fail
+                    .lock()
+                    .expect("first dial slot is not poisoned")
+                    .take()
+                    .expect("only the first dial waits for the failure signal");
+                return Box::pin(async move {
+                    let _ = fail.await;
+                    Err("first H2 establishment failed".into())
+                });
+            }
+
+            let host = origin.host().expect("fixture origin has a host").to_owned();
+            let port = origin.port_u16().expect("fixture origin has a port");
+            Box::pin(async move {
+                TcpStream::connect(format!("{host}:{port}"))
+                    .await
+                    .map(TcpConnected::new)
+                    .map_err(|error| Box::new(error) as _)
+            })
+        }
+    }
+
     smol::block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let counters = ConnectionCounters::default();
         let server_counters = counters.clone();
-        let (accepted_tx, accepted_rx) = oneshot::channel();
-        let (replacement_accepted_tx, replacement_accepted_rx) = oneshot::channel();
         let (fail_tx, fail_rx) = oneshot::channel();
-        let server = smol::spawn(async move {
-            let (first, _) = listener.accept().await.unwrap();
-            server_counters.tcp_opened();
-            accepted_tx.send(()).unwrap();
-            // Keep the first H2 handshake pending until every client has
-            // reached the pool checkout. This makes the failed owner/waiter
-            // transition deterministic instead of relying on scheduler luck.
-            fail_rx.await.unwrap();
-            drop(first);
+        let dialer = FailFirstDialTcpDialer {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: Arc::new(std::sync::Mutex::new(Some(fail_rx))),
+        };
+        let dial_calls = dialer.calls.clone();
+        let mut builder = Client::builder(SmolExecutor);
+        builder.connector(Connector::with_tcp_dialer(dialer));
+        let events = DebugEventLog::default();
+        builder.debug_event_log(events.clone());
+        builder.http2_only(true);
+        let client = builder.build::<FullBody>();
 
-            let (second, _) = listener.accept().await.unwrap();
+        let server = smol::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
             server_counters.tcp_opened();
             server_counters.h2_opened();
-            replacement_accepted_tx.send(()).unwrap();
             let _ = hyper::server::conn::http2::Builder::new(h12tiny::runtime::BoxExecutor::new(
                 SmolExecutor,
             ))
             .serve_connection(
-                h12tiny::io::FuturesIo::new(second),
+                h12tiny::io::FuturesIo::new(connection),
                 H2Service {
                     counters: server_counters.clone(),
                 },
             )
             .await;
         });
-
-        let events = DebugEventLog::default();
-        let mut builder = Client::builder(SmolExecutor);
-        builder.http2_only(true);
-        builder.debug_event_log(events.clone());
-        let client = builder.build::<FullBody>();
 
         let mut requests = Vec::new();
         for path in ["/one", "/two", "/three"] {
@@ -101,7 +133,6 @@ fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
             ));
         }
 
-        accepted_rx.await.unwrap();
         let mut checkouts = 0;
         let mut observed = Vec::new();
         for _ in 0..200 {
@@ -117,8 +148,12 @@ fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
             async_io::Timer::after(Duration::from_millis(1)).await;
         }
         assert_eq!(checkouts, 3, "not all H2 requests reached the pool wait");
+        // The dialer holds the first establishment open until this point, so
+        // every request that reached the pool is parked behind that owner.
+        assert_eq!(dial_calls.load(Ordering::SeqCst), 1);
+        async_io::Timer::after(Duration::from_millis(20)).await;
+
         let _ = fail_tx.send(());
-        replacement_accepted_rx.await.unwrap();
 
         let request_counters = counters.clone();
         let all_requests = async move {
@@ -134,9 +169,9 @@ fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
                     Err(_) => owner_failures += 1,
                 }
             }
-            // The owner has reached the failed peer and cannot safely replay
-            // its request. Every waiter parked behind that owner must instead
-            // be released to retry on the replacement H2 session.
+            // The owner reached the failed dial and cannot safely replay its
+            // request. Every waiter parked behind that owner must instead be
+            // released to retry on the replacement H2 session.
             assert_eq!(owner_failures, 1, "events before failure: {observed:?}");
             assert_eq!(
                 waiter_successes,
@@ -145,6 +180,7 @@ fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
                 request_counters.snapshot()
             );
         };
+
         match future::select(
             Box::pin(all_requests),
             Box::pin(async_io::Timer::after(Duration::from_secs(3))),
@@ -171,7 +207,7 @@ fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
         assert_eq!(
             counters.snapshot(),
             support::CounterSnapshot {
-                tcp_connections: 2,
+                tcp_connections: 1,
                 tls_handshakes: 0,
                 h1_connections: 0,
                 h2_sessions: 1,
