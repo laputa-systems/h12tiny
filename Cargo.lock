@@ -421,7 +421,6 @@ dependencies = [
  "laputa-hyper-futures-lite",
  "pin-project-lite",
  "rustls",
- "rustls-graviola",
 ]
 
 [[package]]

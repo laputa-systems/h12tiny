@@ -11,7 +11,7 @@ repository = "https://github.com/laputa-systems/h12tiny"
 default = []
 http1 = ["hyper/server", "hyper/http1"]
 http2 = ["hyper/server", "hyper/http2"]
-tls = ["dep:futures-rustls", "dep:rustls", "dep:rustls-graviola"]
+tls = ["dep:futures-rustls", "dep:rustls"]
 upgrade = ["http1"]
 
 [dependencies]
@@ -27,7 +27,6 @@ http-body = { workspace = true }
 hyper = { workspace = true }
 pin-project-lite = { workspace = true }
 rustls = { workspace = true, optional = true }
-rustls-graviola = { workspace = true, optional = true }
 
 [dev-dependencies]
 futures-lite = { workspace = true }

@@ -106,8 +106,8 @@ for package in async-io laputa-async-io async-net laputa-async-net futures-chann
     require_absent "$package" "$sync_client_tls" "TLS sync client"
 done
 require_present rustls "$server_h1_tls" "TLS H1 server"
-require_present rustls-graviola "$server_h1_tls" "TLS H1 server"
-require_present graviola "$server_h1_tls" "TLS H1 server"
+require_absent rustls-graviola "$server_h1_tls" "TLS H1 server"
+require_absent graviola "$server_h1_tls" "TLS H1 server"
 require_absent h12tiny-tls-system "$server_h1_tls" "TLS H1 server"
 require_absent rustls-native-certs "$server_h1_tls" "TLS H1 server"
 require_absent webpki-roots "$server_h1_tls" "TLS H1 server"

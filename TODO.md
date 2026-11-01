@@ -1,5 +1,5 @@
 Prefix: H12T
-Next: 17
+Next: 18
 
 ### H12T-12 · P1 · Unbounded retry, fail-open defaults, and deadline-free shutdown
 
@@ -10,14 +10,5 @@ Next: 17
 - **Fix with:** `lifecycle-concurrency`
 - **Effort:** M
 - **Design:** `docs/rfc/H12T-12-production-bounds.md`
-
-### H12T-17 · P4 · The server TLS feature pulls an unused Rustls provider
-
-- **Area:** Dependencies
-- **Where:** `crates/h12tiny-server/Cargo.toml:14`, `crates/h12tiny-server/Cargo.toml:30`
-- **Problem:** The `tls` feature enables the optional `rustls-graviola` dependency, but no server code references it; only a doc comment names its provider constructor. Cargo reports `unused dependency rustls-graviola` on feature checks, and every TLS server build resolves a crate it cannot use.
-- **Recommendation:** Remove the optional dependency and its feature entry; keep the doc example as caller-supplied provider guidance.
-- **Fix with:** `none`
-- **Effort:** S
 
 

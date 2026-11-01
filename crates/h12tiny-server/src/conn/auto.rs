@@ -23,6 +23,7 @@ use std::sync::{Arc, atomic::AtomicUsize};
 #[cfg(feature = "http2")]
 use std::sync::atomic::Ordering;
 use std::task::{ready, Context, Poll};
+#[cfg(feature = "http1")]
 use std::time::Duration;
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
