@@ -256,7 +256,9 @@ if ! jaq -e '
    ($m.http_req_failed.value // $m.http_req_failed.values.rate),
    ($m.http_reqs.count // $m.http_reqs.values.count),
    ($m.http_reqs.rate // $m.http_reqs.values.rate)] |
-  all(.[]; type == "number" and . >= 0)
+  all(.[]; type == "number" and . >= 0) and
+  (($m.http_reqs.count // $m.http_reqs.values.count) > 0) and
+  (($m.http_req_failed.value // $m.http_req_failed.values.rate) <= 1)
 ' "$RUN_DIR/k6-summary.json" >/dev/null 2>&1; then
   add_reason "k6 summary has missing or malformed request metrics"
 fi

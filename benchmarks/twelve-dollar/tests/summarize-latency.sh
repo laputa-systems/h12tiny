@@ -22,6 +22,14 @@ bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 
 jaq -e '.valid == false' "$test_dir/summary.json" >/dev/null
 jaq '.metrics.http_req_duration["p(99)"] = 0.9109' "$test_dir/k6-summary.json" > "$test_dir/complete.json"
 mv "$test_dir/complete.json" "$test_dir/k6-summary.json"
+jaq '.metrics.http_reqs.count = 0' "$test_dir/k6-summary.json" > "$test_dir/empty.json"
+mv "$test_dir/empty.json" "$test_dir/k6-summary.json"
+printf '%s\n' 'http_reqs....: 0' > "$test_dir/k6.log"
+bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
+jaq -e '.valid == false' "$test_dir/summary.json" >/dev/null
+jaq '.metrics.http_reqs.count = 1' "$test_dir/k6-summary.json" > "$test_dir/complete.json"
+mv "$test_dir/complete.json" "$test_dir/k6-summary.json"
+printf '%s\n' 'http_reqs....: 1' > "$test_dir/k6.log"
 printf '%s\n' '{"exit_code":99}' > "$test_dir/k6-run.json"
 bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
 jaq -e '.valid == true and .k6.exit_code == 99' "$test_dir/summary.json" >/dev/null
