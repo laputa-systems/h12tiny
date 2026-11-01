@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "bytes",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-client"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "futures-channel",
  "futures-io",
@@ -378,14 +378,14 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-client-normalize"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "http",
 ]
 
 [[package]]
 name = "h12tiny-client-sync"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "h12tiny-client-normalize",
  "h12tiny-tls-system",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "futures-io",
  "laputa-async-io",
@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-server"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-tls-system"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "openssl-probe",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-util"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bytes",
  "futures-io",
@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "h12tiny-web"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "bytes",
