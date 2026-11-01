@@ -27,7 +27,7 @@ usage: run.sh [box|macos] [--profile box|macos] [--mode nginx|direct] [options] 
 commands: setup, box-check, test, smoke, ceiling
 not implemented yet: search, confirm, attribute, report
 
-smoke options: --vus N (50), --duration 30s, --ramp-up 10s
+smoke options: --vus N (50), --duration 30s, --ramp-up 10s, --readers N (2)
 ceiling always probes both modes with 60 s ramp and 60 s hold
 
 defaults: --profile box --mode nginx
@@ -390,6 +390,7 @@ cmd_smoke() {
   docker exec -d "$BOX" env \
     SQLITE_PATH="/runs/$run_id/feed.db" \
     JWT_SECRET=twelve-dollar-challenge \
+    TWELVE_DOLLAR_READERS="$opt_readers" \
     HOST="$app_host" \
     PORT="$app_port" \
     START_SH="$harness/start.sh" \
@@ -456,6 +457,7 @@ cmd_smoke() {
     --network "$NET" \
     --cpus=8 \
     --memory=10g \
+    --ulimit nofile=65535:65535 \
     --volume "$CHALLENGE:/challenge:ro" \
     --volume "$RUNS_VOL:/runs" \
     --env BASE_URL="http://$box_ip:$target_port" \
@@ -578,6 +580,7 @@ command=""
 opt_vus=50
 opt_duration=30s
 opt_ramp=10s
+opt_readers=2
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -627,6 +630,14 @@ while [ $# -gt 0 ]; do
       ;;
     --ramp-up=*)
       opt_ramp="${1#*=}"
+      ;;
+    --readers)
+      [ $# -ge 2 ] || { usage; exit 2; }
+      opt_readers="$2"
+      shift
+      ;;
+    --readers=*)
+      opt_readers="${1#*=}"
       ;;
     -h|--help)
       usage
@@ -680,6 +691,11 @@ if [ "$opt_vus" -le 0 ]; then
   echo "--vus must be a positive integer, got '$opt_vus'" >&2
   exit 2
 fi
+
+case "$opt_readers" in
+  1|2|3|4) ;;
+  *) echo "--readers must be between 1 and 4, got '$opt_readers'" >&2; exit 2 ;;
+esac
 
 case "$command" in
   setup) cmd_setup ;;
