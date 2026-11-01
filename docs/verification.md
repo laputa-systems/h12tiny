@@ -73,8 +73,10 @@ required version on crates.io before releasing. Publish missing smolith
 packages first, followed by the forks in that order. Packaging a fork drops
 `path` and leaves the version requirement, so an unpublished version cannot
 be resolved from crates.io.
-`make publish` checks for a Cargo registry login before starting. It can resume a partial publication while HEAD remains the
-matching release commit. Run it only when releasing, with `TMPDIR` set to the
+`make publish` checks for a Cargo registry login before starting. It targets
+crates.io explicitly, so the repository's source replacement cannot redirect
+release queries or publish verification. It can resume a partial publication
+while HEAD remains the matching release commit. Run it only when releasing, with `TMPDIR` set to the
 repository's `.work/tmp` for its backup files. See the
 [upstream rebase guide](../.agents/skills/rebase-upstreams/SKILL.md) and the
 [fork publish guide](../.agents/skills/publish-forks/SKILL.md) for fork releases.

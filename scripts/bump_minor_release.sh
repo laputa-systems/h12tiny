@@ -12,7 +12,9 @@
 # Re-running after a partial publish finishes the remaining crates instead
 # of failing. A crates.io 429 throttle waits for the server's retry time and
 # resumes instead of aborting. A missing registry login fails before any
-# registry query or file edit.
+# registry query or file edit. Registry queries and publishes name crates.io
+# explicitly, and publish verification runs outside the repository, so a
+# crates.io source replacement cannot redirect the release.
 
 set -eu
 LC_ALL=C
@@ -26,6 +28,28 @@ fail() {
 SCRIPT_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P) || fail "cannot locate script directory"
 ROOT=$(CDPATH= cd -P "$SCRIPT_DIR/.." && pwd -P) || fail "cannot locate repository root"
 cd "$ROOT"
+
+# Publish verification resolves the packaged crate's registry dependencies
+# through the local Cargo configuration. A replacement of crates.io only
+# holds versions already imported into it, while the release needs every
+# dependency from crates.io itself, so run those commands from the
+# filesystem root, where no repository config applies.
+PUBLISH_CWD=/
+REPO_TOOLCHAIN=
+if command -v rustup >/dev/null 2>&1; then
+    REPO_TOOLCHAIN=$(rustup show active-toolchain 2>/dev/null | awk '{ print $1 }') || REPO_TOOLCHAIN=
+fi
+
+publish_cargo() {
+    (
+        cd "$PUBLISH_CWD" || exit 1
+        if [ -n "$REPO_TOOLCHAIN" ]; then
+            RUSTUP_TOOLCHAIN=$REPO_TOOLCHAIN
+            export RUSTUP_TOOLCHAIN
+        fi
+        cargo "$@" --manifest-path "$ROOT/Cargo.toml"
+    )
+}
 
 for command_name in awk cargo cp dirname git grep mkdir mv python3 rm sed sleep sort; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
@@ -188,7 +212,7 @@ registry_latest() {
     # release output; it is reported when the query itself fails.
     attempt=1
     while true; do
-        if search_result=$(cargo search "$1" --limit 1 2>&1); then
+        if search_result=$(cargo search "$1" --limit 1 --registry crates-io 2>&1); then
             break
         fi
         if is_rate_limited "$search_result"; then
@@ -199,7 +223,7 @@ registry_latest() {
             attempt=$((attempt + 1))
             continue
         fi
-        fail "could not query the default Cargo registry for $1: $search_result"
+        fail "could not query crates.io for $1: $search_result"
     done
     printf '%s\n' "$search_result" | awk -v package_name="$1" '
         $1 == package_name && $2 == "=" && $3 ~ /^".+"$/ {
@@ -300,7 +324,7 @@ dry_run_package() {
     # so a dependency published seconds ago has time to appear.
     attempt=1
     while true; do
-        if dry_output=$(cargo publish -p "$1" --dry-run --allow-dirty 2>&1); then
+        if dry_output=$(publish_cargo publish -p "$1" --dry-run --allow-dirty --registry crates-io 2>&1); then
             printf '%s\n' "$dry_output"
             return 0
         fi
@@ -338,7 +362,7 @@ publish_package() {
     attempt=1
     transient_attempt=1
     while true; do
-        if publish_output=$(cargo publish -p "$1" 2>&1); then
+        if publish_output=$(publish_cargo publish -p "$1" --registry crates-io 2>&1); then
             printf '%s\n' "$publish_output"
             return 0
         fi
@@ -575,7 +599,7 @@ for name in $PKG_SPACE; do
     latest=$(registry_latest "$name")
     PUBLISHED="${PUBLISHED}${PUBLISHED:+$newline}$name=$latest"
     if [ -n "$latest" ]; then
-        owner_output=$(cargo owner --list "$name" 2>&1) || fail "could not verify ownership of $name: $owner_output"
+        owner_output=$(cargo owner --list "$name" --registry crates-io 2>&1) || fail "could not verify ownership of $name: $owner_output"
     fi
 done
 
