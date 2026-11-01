@@ -24,8 +24,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: run.sh [box|macos] [--profile box|macos] [--mode nginx|direct] [options] <command>
 
-commands: setup, box-check, test, smoke, ceiling
-not implemented yet: search, confirm, attribute, report
+commands: setup, box-check, test, smoke, ceiling, search, confirm
+not implemented yet: attribute, report
 
 smoke options: --vus N (50), --duration 30s, --ramp-up 10s, --readers N (2)
 ceiling always probes both modes with 60 s ramp and 60 s hold
@@ -230,7 +230,10 @@ cmd_smoke() {
   fi
   target_port=80
 
-  run_id="$(date -u +%Y%m%dT%H%M%SZ)-${mode}-${vus}vu"
+  run_id="${TWELVE_DOLLAR_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-${mode}-${vus}vu}"
+  case "$run_id" in
+    ''|*[!a-zA-Z0-9_-]*) die "invalid run id: $run_id" ;;
+  esac
   result_dir="$STATE/results/$run_id"
   [ ! -e "$result_dir" ] || die "result directory already exists: $result_dir"
   docker exec "$BOX" test ! -e "/runs/$run_id" || die "run directory already exists in $BOX: /runs/$run_id"
@@ -535,8 +538,12 @@ cmd_smoke() {
   docker exec "$BOX" rm -rf "/runs/$run_id"
   trap - EXIT
 
-  if [ "$valid" != true ] || [ "$k6_rc" -ne 0 ]; then
+  if [ "$valid" != true ]; then
     echo "smoke: run is not valid under D9; see $result_dir/summary.json" >&2
+    exit 1
+  fi
+  if [ "$k6_rc" -ne 0 ]; then
+    echo "smoke: k6 thresholds failed; see $result_dir/summary.json" >&2
     exit 1
   fi
   echo "== results $result_dir"
@@ -571,6 +578,7 @@ cmd_ceiling() {
     --ramp-up 60 \
     --duration 60
 
+  cp "$result_dir/ceiling.json" "$STATE/ceiling.json"
   echo "== results $result_dir"
 }
 
@@ -720,7 +728,8 @@ case "$command" in
   test) cmd_test ;;
   smoke) if [ "$profile" = macos ]; then cmd_macos_smoke; else cmd_smoke; fi ;;
   ceiling) cmd_ceiling ;;
-  search|confirm|attribute|report)
+  search|confirm) bash "$HERE/tools/search.sh" "$command" "$mode" "$HERE" "$STATE" "$opt_readers" ;;
+  attribute|report)
     echo "command $command is not implemented yet" >&2
     exit 2
     ;;

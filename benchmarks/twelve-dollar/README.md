@@ -19,6 +19,12 @@ bash benchmarks/twelve-dollar/setup.sh
 `.work/twelve-dollar/challenge`, builds `seed/feed.db`, and asserts that the
 checkout is still clean. It never refreshes an existing clone.
 
+Run `bash benchmarks/twelve-dollar/run.sh box ceiling` before `box search` and
+`box confirm`. Select `--mode nginx` or `--mode direct` for each search and
+confirmation. A deferred search or confirmation can be resumed with the same
+command, revision, reader count, and measured ceiling. Results and search state
+live under `.work/twelve-dollar/`.
+
 ## Loop timings
 
 Measured 2026-11-01 on h12tiny `1c24cdd`, aarch64 macOS, with the debug target
