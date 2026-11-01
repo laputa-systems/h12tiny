@@ -72,25 +72,22 @@ impl std::error::Error for Error {}
 /// A `CONNECT` authority target is accepted and assigned `https` only when it
 /// names port 443; other authority targets use `http` to select the transport.
 pub fn extract_origin(uri: &mut Uri, is_connect: bool) -> Result<Origin, Error> {
-    let original = uri.clone();
-    if let Some(authority) = original.authority() {
+    if let Some(authority) = uri.authority() {
         validate_port(authority)?;
     }
-    match (original.scheme(), original.authority()) {
+    match (uri.scheme(), uri.authority()) {
         (Some(scheme), Some(authority)) => Ok(Origin {
             scheme: scheme.clone(),
             authority: authority.clone(),
         }),
         (None, Some(authority)) if is_connect => {
+            let authority = authority.clone();
             let scheme = match authority.port_u16() {
                 Some(443) => Scheme::HTTPS,
                 _ => Scheme::HTTP,
             };
             set_connect_scheme(uri, scheme.clone());
-            Ok(Origin {
-                scheme,
-                authority: authority.clone(),
-            })
+            Ok(Origin { scheme, authority })
         }
         _ => Err(Error::AbsoluteUriRequired),
     }

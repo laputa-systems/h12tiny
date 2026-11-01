@@ -624,7 +624,6 @@ where
         key: PoolKey,
         options: RequestOptions,
     ) -> Result<Response<Incoming>, Error> {
-        let absolute_uri = request.uri().clone();
         loop {
             match self.try_send_request(request, key.clone(), options).await {
                 Ok(response) => return Ok(response),
@@ -633,6 +632,7 @@ where
                     request: returned_request,
                     error,
                     reused,
+                    absolute_uri,
                 }) => {
                     if !self.config.retry_canceled_requests || !reused {
                         return Err(error);
@@ -643,7 +643,9 @@ where
                         });
                     }
                     request = *returned_request;
-                    *request.uri_mut() = absolute_uri.clone();
+                    if let Some(absolute_uri) = absolute_uri {
+                        *request.uri_mut() = absolute_uri;
+                    }
                 }
             }
         }
@@ -659,14 +661,18 @@ where
             .connection_for(key, options)
             .await
             .map_err(TrySendError::Final)?;
-        if pooled.is_http1() {
+        let absolute_uri = if pooled.is_http1() {
             if request.version() == Version::HTTP_2 {
                 return Err(TrySendError::Final(Error::new(
                     ErrorKind::UnsupportedVersion,
                 )));
             }
+            let absolute_uri = request.uri().clone();
             normalize::normalize_h1_request(&mut request, self.config.set_host);
-        }
+            Some(absolute_uri)
+        } else {
+            None
+        };
 
         let response_info = ResponseInfo {
             connection: pooled.connection_info,
@@ -692,6 +698,7 @@ where
                         request: Box::new(request),
                         reused: pooled.is_reused(),
                         error: Error::with_source(ErrorKind::Canceled, (*error).into_error()),
+                        absolute_uri,
                     });
                 }
                 return Err(TrySendError::Final(Error::with_source(
@@ -743,7 +750,26 @@ where
                 .await
                 .map_err(ConnectionError::Final);
         }
-        let checkout = self.pool.checkout(key.clone());
+        let mut checkout = self.pool.checkout(key.clone());
+        match futures_util::poll!(Pin::new(&mut checkout)) {
+            Poll::Ready(Ok(pooled)) => return Ok(pooled),
+            Poll::Ready(Err(error)) if error.is_cancellation() => {
+                return self
+                    .connect_to(key, options)
+                    .await
+                    .map_err(ConnectionError::Final);
+            }
+            Poll::Ready(Err(CheckoutError::NoLongerWanted)) => {
+                return Err(ConnectionError::Retry);
+            }
+            Poll::Ready(Err(error)) => {
+                return Err(ConnectionError::Final(Error::with_source(
+                    ErrorKind::Connect,
+                    error,
+                )));
+            }
+            Poll::Pending => {}
+        }
         let connect = Box::pin(self.connect_to(key, options));
         match future::select(checkout, connect).await {
             Either::Left((Ok(pooled), _)) => Ok(pooled),
@@ -922,6 +948,7 @@ enum TrySendError<B> {
         request: Box<Request<B>>,
         error: Error,
         reused: bool,
+        absolute_uri: Option<http::Uri>,
     },
     Final(Error),
 }
