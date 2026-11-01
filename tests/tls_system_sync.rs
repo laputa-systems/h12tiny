@@ -8,7 +8,9 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
-use h12tiny::client_sync::{Client, ClientTlsConfigBuilder, ErrorKind};
+use h12tiny::client_sync::{
+    Client, ClientTlsConfigBuilder, ClientTrustSource, ErrorKind,
+};
 use http::Request;
 
 fn get(port: u16) -> Result<http::StatusCode, h12tiny::client_sync::Error> {
@@ -869,4 +871,13 @@ fn supplementary_dir_errors_do_not_break_valid_bundle() {
         1,
     );
     assert_eq!(get(address.port()).unwrap(), 200);
+}
+
+#[test]
+fn sync_builder_reports_explicit_trust_source() {
+    let (_, source) = ClientTlsConfigBuilder::new()
+        .root_certificates(rustls::RootCertStore::empty())
+        .build_with_trust_source()
+        .unwrap();
+    assert_eq!(source, ClientTrustSource::ExplicitRoots);
 }

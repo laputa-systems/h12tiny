@@ -11,13 +11,4 @@ Next: 17
 - **Effort:** M
 - **Design:** `docs/rfc/H12T-12-production-bounds.md`
 
-### H12T-15 · P2 · TLS trust selection and failure signals are easy to misread
-
-- **Area:** Security
-- **Where:** `crates/h12tiny-tls-system/src/lib.rs:384-406`, `crates/h12tiny-tls-system/src/lib.rs:527-597`, `crates/h12tiny-client/src/lib.rs:425-485`
-- **Problem:** `SSL_CERT_FILE`/`SSL_CERT_DIR` silently switch macOS from platform evaluation to PEM trust; env is read on every `capture()` and the builder does not surface which source won. `DebugEvent` is explicitly not a metrics framework and trust-reload failures surface as generic strings, so operators cannot alert on store vs network vs pool causes. Non-Unix `file_identity()` returns `None`, leaving only mtime/length; a preserved-mtime replacement there is undetected until restart. The same Graviola plus system-trust plus ALPN defaults are copy-pasted across client, sync client, and tls-system.
-- **Recommendation:** Expose which trust source won, add a minimal error taxonomy plus caller hooks for reload/pool/handshake causes, tighten or document the non-Unix fingerprint guarantee, and unify the TLS default constructors into one shared policy.
-- **Fix with:** `security`
-- **Effort:** M
-
 

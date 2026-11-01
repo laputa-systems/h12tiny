@@ -593,3 +593,33 @@ fn h1_cap_releases_queued_request_after_connection_close() {
 fn h1_cap_releases_queued_request_after_active_request_cancellation() {
     smol::block_on(queued_h1_request_after_slot_release(true));
 }
+
+#[cfg(feature = "http1")]
+#[test]
+fn failed_request_records_its_error_kind() {
+    smol::block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let events = DebugEventLog::default();
+        let mut builder = Client::builder(SmolExecutor);
+        builder.debug_event_log(events.clone());
+        let client = builder.build::<FullBody>();
+        let error = client
+            .request(
+                Request::builder()
+                    .uri(format!("http://{address}/"))
+                    .body(FullBody::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect_err("the closed port must reject the connection");
+        assert_eq!(error.kind(), ErrorKind::Connect);
+        assert!(events.drain().iter().any(|event| matches!(
+            event,
+            DebugEvent::ConnectionFailed { origin, kind }
+                if origin == &format!("http://{address}") && *kind == ErrorKind::Connect
+        )));
+    });
+}

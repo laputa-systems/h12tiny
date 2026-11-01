@@ -24,6 +24,15 @@ backends.
 A missing, unreadable, empty, or invalid system store fails the handshake
 with a TLS error. The clients never silently fall back to embedded roots.
 
+`ClientTlsConfigBuilder::build_with_trust_source()` reports whether explicit
+roots won or which system source was used: native platform evaluation, PEM
+files, or the platform certificate store. Direct users of
+`h12tiny-tls-system` can classify failures with `SystemTrustError::kind()` and
+distinguish a refresh from a first load with `is_reload()`. The async client
+also records terminal request failures as `DebugEvent::ConnectionFailed` with
+the error kind; like other debug events, it is a best-effort inspection hook,
+not a metrics framework.
+
 Trust sources have explicit authority. The designated certificate file
 (`SSL_CERT_FILE` when set, otherwise the probed default) must parse to at
 least one usable root: every `CERTIFICATE` block must base64-decode and

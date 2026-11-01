@@ -4,7 +4,7 @@ mod support;
 
 use std::sync::Arc;
 
-use h12tiny::client::{Client, ClientTlsConfigBuilder, Connector};
+use h12tiny::client::{Client, ClientTlsConfigBuilder, ClientTrustSource, Connector, SystemTrustSource};
 use support::tls_system;
 use support::{FullBody, SmolExecutor, collect};
 
@@ -287,6 +287,39 @@ fn async_system_refresh_observed() {
         );
         assert_eq!(get_default(second_address.port()).await.unwrap(), b"ok");
     });
+}
+
+#[test]
+fn async_builder_reports_the_trust_source() {
+    if isolated("async_builder_reports_the_trust_source") {
+        return;
+    }
+    let chain = tls_system::p384_chain();
+    let dir = tls_system::TempDir::new();
+    let bundle = tls_system::write_bundle(dir.path(), "bundle.pem", &[&chain.root_pem]);
+    tls_system::set_bundle_file(&bundle);
+
+    let (_, source) = ClientTlsConfigBuilder::new()
+        .build_with_trust_source()
+        .unwrap();
+    #[cfg(target_vendor = "apple")]
+    match source {
+        ClientTrustSource::System(SystemTrustSource::Files { file, .. }) => {
+            assert_eq!(file.as_deref(), Some(bundle.as_path()));
+        }
+        other => panic!("unexpected trust source: {other:?}"),
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    assert_eq!(
+        source,
+        ClientTrustSource::System(SystemTrustSource::NativeStore)
+    );
+
+    let (_, source) = ClientTlsConfigBuilder::new()
+        .root_certificates(rustls::RootCertStore::empty())
+        .build_with_trust_source()
+        .unwrap();
+    assert_eq!(source, ClientTrustSource::ExplicitRoots);
 }
 
 #[test]

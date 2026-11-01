@@ -31,6 +31,8 @@ use h12tiny_core::runtime::{AsyncIoTimer, BoxExecutor, BoxSendFuture};
 
 #[cfg(feature = "tls")]
 pub use connect::ClientTlsConfigBuilder;
+#[cfg(feature = "tls")]
+pub use h12tiny_tls_system::{ClientTrustSource, SystemTrustSource};
 pub use connect::{
     Connected, ConnectionIo, Connector, ConnectorBuilder, DialError, DialFuture, Dialer,
     ResolveFuture, Resolver, SystemResolver, TcpConnected, TcpConnectionIo, TcpDialFuture,
@@ -577,6 +579,10 @@ pub enum DebugEvent {
     StaleRetry {
         origin: String,
     },
+    ConnectionFailed {
+        origin: String,
+        kind: ErrorKind,
+    },
 }
 
 /// An opt-in, dependency-free sink for client connection lifecycle events.
@@ -752,7 +758,15 @@ where
         loop {
             match self.try_send_request(request, key.clone(), options).await {
                 Ok(response) => return Ok(response),
-                Err(TrySendError::Final(error)) => return Err(error),
+                Err(TrySendError::Final(error)) => {
+                    if let Some(events) = &self.debug_events {
+                        events.record(DebugEvent::ConnectionFailed {
+                            origin: normalize::pool_key_origin(&key),
+                            kind: error.kind(),
+                        });
+                    }
+                    return Err(error);
+                }
                 Err(TrySendError::Retryable {
                     request: returned_request,
                     error,
@@ -760,6 +774,12 @@ where
                     absolute_uri,
                 }) => {
                     if !self.config.retry_canceled_requests || !reused {
+                        if let Some(events) = &self.debug_events {
+                            events.record(DebugEvent::ConnectionFailed {
+                                origin: normalize::pool_key_origin(&key),
+                                kind: error.kind(),
+                            });
+                        }
                         return Err(error);
                     }
                     if let Some(events) = &self.debug_events {

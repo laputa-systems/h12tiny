@@ -18,23 +18,84 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error as TlsError, SignatureScheme};
 
+/// Stable classification for a system-trust failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SystemTrustErrorKind {
+    /// The verifier or trust state could not be accessed.
+    Unavailable,
+    /// A configured file or directory could not be read.
+    Unreadable,
+    /// The trust material was malformed or unusable.
+    Invalid,
+    /// The store contained no usable certificates.
+    Empty,
+    /// The requested TLS policy is unsupported by the provider.
+    Unsupported,
+}
+
 /// Failure to load or refresh the operating-system trust store.
 #[derive(Debug)]
 pub struct SystemTrustError {
+    kind: SystemTrustErrorKind,
     message: String,
+    reload: bool,
 }
 
 impl SystemTrustError {
-    fn new(message: impl Into<String>) -> Self {
+    fn new(kind: SystemTrustErrorKind, message: impl Into<String>) -> Self {
         Self {
+            kind,
             message: message.into(),
+            reload: false,
         }
+    }
+
+    fn during_reload(mut self, reload: bool) -> Self {
+        self.reload = reload;
+        self
+    }
+
+    /// Returns the stable failure classification.
+    pub fn kind(&self) -> SystemTrustErrorKind {
+        self.kind
+    }
+
+    /// Reports whether this failure happened while refreshing an already
+    /// loaded store rather than during its first load.
+    pub fn is_reload(&self) -> bool {
+        self.reload
     }
 
     /// Human-readable reason the store could not be used.
     pub fn message(&self) -> &str {
         &self.message
     }
+}
+
+/// Where a system-trust client configuration takes its roots from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SystemTrustSource {
+    /// Apple Security.framework evaluation, including platform distrust.
+    Platform,
+    /// PEM files selected by `SSL_CERT_FILE`/`SSL_CERT_DIR` or probing.
+    Files {
+        file: Option<PathBuf>,
+        directories: Vec<PathBuf>,
+    },
+    /// The platform certificate store loaded by `rustls-native-certs`.
+    NativeStore,
+}
+
+/// Trust source used by a finished client configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClientTrustSource {
+    /// Roots supplied explicitly by the caller.
+    ExplicitRoots,
+    /// Operating-system trust, with the resolved source.
+    System(SystemTrustSource),
 }
 
 impl fmt::Display for SystemTrustError {
@@ -62,6 +123,12 @@ impl From<SystemTrustError> for TlsError {
 /// against PEM system roots through rustls-webpki and reloads them when the
 /// store changes. A failed reload fails the handshake rather than reusing
 /// stale trust.
+///
+/// On Unix, change detection compares device, inode, and change time, so an
+/// atomic replacement or a symlink retarget is observed even when modification
+/// time and length are preserved. Other platforms compare only modification
+/// time and length, so a replacement that preserves both is not detected
+/// before the process restarts.
 #[derive(Debug)]
 pub struct SystemVerifier {
     provider: Arc<CryptoProvider>,
@@ -109,14 +176,35 @@ impl SystemVerifier {
     /// failures at build time instead of on first use.
     pub fn preload(&self) -> Result<(), SystemTrustError> {
         let mut state = self.state.lock().map_err(|_| {
-            SystemTrustError::new("system trust state is unavailable")
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unavailable,
+                "system trust state is unavailable",
+            )
         })?;
         state.ensure_loaded(&self.provider)
     }
 
+    /// Reports the trusted source after loading the store.
+    ///
+    /// On Apple platforms this distinguishes native evaluation from PEM files
+    /// selected through `SSL_CERT_FILE` or `SSL_CERT_DIR`.
+    pub fn trust_source(&self) -> Result<SystemTrustSource, SystemTrustError> {
+        let mut state = self.state.lock().map_err(|_| {
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unavailable,
+                "system trust state is unavailable",
+            )
+        })?;
+        state.ensure_loaded(&self.provider)?;
+        Ok(state.source())
+    }
+
     fn verifier_for_handshake(&self) -> Result<Arc<dyn ServerCertVerifier>, SystemTrustError> {
         let mut state = self.state.lock().map_err(|_| {
-            SystemTrustError::new("system trust state is unavailable")
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unavailable,
+                "system trust state is unavailable",
+            )
         })?;
         state.ensure_loaded(&self.provider)?;
         Ok(state.active_verifier())
@@ -146,14 +234,16 @@ impl State {
                     let State::File { cached } = self else {
                         unreachable!("env override uses file trust");
                     };
-                    let fingerprint = TrustFingerprint::capture()?;
+                    let was_loaded = cached.is_some();
+                    let fingerprint = TrustFingerprint::capture()
+                        .map_err(|error| error.during_reload(was_loaded))?;
                     let fresh = match cached.as_ref() {
                         Some(current) if current.fingerprint == fingerprint => return Ok(()),
                         _ => true,
                     };
                     if fresh {
-                        let (verifier, fingerprint) =
-                            load_native_verifier(provider, fingerprint)?;
+                        let (verifier, fingerprint) = load_native_verifier(provider, fingerprint)
+                            .map_err(|error| error.during_reload(was_loaded))?;
                         *cached = Some(CachedVerifier {
                             verifier,
                             fingerprint,
@@ -171,9 +261,10 @@ impl State {
                         let native =
                             rustls_platform_verifier::Verifier::new(provider.clone()).map_err(
                                 |error| {
-                                    SystemTrustError::new(format!(
-                                        "native verification is unavailable: {error}"
-                                    ))
+                                    SystemTrustError::new(
+                                        SystemTrustErrorKind::Unavailable,
+                                        format!("native verification is unavailable: {error}"),
+                                    )
                                 },
                             )?;
                         *verifier = Some(Arc::new(native));
@@ -183,13 +274,16 @@ impl State {
             }
             #[cfg(not(target_vendor = "apple"))]
             State::Native { cached } => {
-                let fingerprint = TrustFingerprint::capture()?;
+                let was_loaded = cached.is_some();
+                let fingerprint = TrustFingerprint::capture()
+                    .map_err(|error| error.during_reload(was_loaded))?;
                 let fresh = match cached.as_ref() {
                     Some(current) if current.fingerprint == fingerprint => return Ok(()),
                     _ => true,
                 };
                 if fresh {
-                    let (verifier, fingerprint) = load_native_verifier(provider, fingerprint)?;
+                    let (verifier, fingerprint) = load_native_verifier(provider, fingerprint)
+                        .map_err(|error| error.during_reload(was_loaded))?;
                     *cached = Some(CachedVerifier {
                         verifier,
                         fingerprint,
@@ -197,6 +291,38 @@ impl State {
                 }
                 Ok(())
             }
+        }
+    }
+
+    fn source(&self) -> SystemTrustSource {
+        #[cfg(target_vendor = "apple")]
+        {
+            match self {
+                State::Platform { .. } => SystemTrustSource::Platform,
+                State::File { cached } => match cached {
+                    Some(cached) => SystemTrustSource::Files {
+                        file: cached
+                            .fingerprint
+                            .file
+                            .as_ref()
+                            .map(|tracked| tracked.path.clone()),
+                        directories: cached
+                            .fingerprint
+                            .dirs
+                            .iter()
+                            .map(|tracked| tracked.path.clone())
+                            .collect(),
+                    },
+                    None => SystemTrustSource::Files {
+                        file: None,
+                        directories: Vec::new(),
+                    },
+                },
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            SystemTrustSource::NativeStore
         }
     }
 
@@ -277,13 +403,22 @@ pub fn system_client_config(
     alpn_protocols: Vec<Vec<u8>>,
     protocol_versions: Option<Vec<&'static rustls::SupportedProtocolVersion>>,
 ) -> Result<rustls::ClientConfig, SystemTrustError> {
+    system_client_config_with_source(provider, alpn_protocols, protocol_versions)
+        .map(|(config, _)| config)
+}
+
+/// Builds a system-trust client configuration and reports the source used.
+pub fn system_client_config_with_source(
+    provider: Arc<CryptoProvider>,
+    alpn_protocols: Vec<Vec<u8>>,
+    protocol_versions: Option<Vec<&'static rustls::SupportedProtocolVersion>>,
+) -> Result<(rustls::ClientConfig, SystemTrustSource), SystemTrustError> {
     let verifier = Arc::new(SystemVerifier::new(provider.clone()));
     verifier.preload()?;
-    Ok(finish_system_config(
-        provider,
-        verifier,
-        alpn_protocols,
-        protocol_versions,
+    let source = verifier.trust_source()?;
+    Ok((
+        finish_system_config(provider, verifier, alpn_protocols, protocol_versions),
+        source,
     ))
 }
 
@@ -331,24 +466,238 @@ pub fn system_client_config_with_auth(
     certificate_chain: Vec<CertificateDer<'static>>,
     private_key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<rustls::ClientConfig, SystemTrustError> {
+    system_client_config_with_auth_and_source(
+        provider,
+        alpn_protocols,
+        protocol_versions,
+        certificate_chain,
+        private_key,
+    )
+    .map(|(config, _)| config)
+}
+
+/// Builds a system-trust configuration with a client identity and reports
+/// the trust source used.
+pub fn system_client_config_with_auth_and_source(
+    provider: Arc<CryptoProvider>,
+    alpn_protocols: Vec<Vec<u8>>,
+    protocol_versions: Option<Vec<&'static rustls::SupportedProtocolVersion>>,
+    certificate_chain: Vec<CertificateDer<'static>>,
+    private_key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<(rustls::ClientConfig, SystemTrustSource), SystemTrustError> {
     let verifier = Arc::new(SystemVerifier::new(provider.clone()));
     verifier.preload()?;
+    let source = verifier.trust_source()?;
     let builder = rustls::ClientConfig::builder_with_provider(provider);
     let builder = match protocol_versions {
         Some(versions) => builder.with_protocol_versions(&versions).map_err(|error| {
-            SystemTrustError::new(format!("TLS protocol versions are unsupported: {error}"))
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unsupported,
+                format!("TLS protocol versions are unsupported: {error}"),
+            )
         })?,
         None => builder.with_safe_default_protocol_versions().map_err(|error| {
-            SystemTrustError::new(format!("TLS protocol versions are unsupported: {error}"))
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unsupported,
+                format!("TLS protocol versions are unsupported: {error}"),
+            )
         })?,
     };
     let mut config = builder
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(certificate_chain, private_key)
-        .map_err(|error| SystemTrustError::new(format!("client identity is invalid: {error}")))?;
+        .map_err(|error| {
+            SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!("client identity is invalid: {error}"),
+            )
+        })?;
     config.alpn_protocols = alpn_protocols;
-    Ok(config)
+    Ok((config, source))
+}
+
+/// Builds a Rustls client configuration with system trust or explicit roots.
+///
+/// This is the shared policy used by both h12tiny clients: Graviola or an
+/// explicit provider is selected by the caller, system trust loads eagerly and
+/// refreshes on later handshakes, and explicit roots are never merged with it.
+pub struct SystemClientConfigBuilder {
+    provider: Arc<CryptoProvider>,
+    trust: ClientTrust,
+    alpn_protocols: Vec<Vec<u8>>,
+    protocol_versions: Option<Vec<&'static rustls::SupportedProtocolVersion>>,
+    client_auth: ClientAuthentication,
+}
+
+enum ClientTrust {
+    System,
+    Explicit(rustls::RootCertStore),
+}
+
+enum ClientAuthentication {
+    None,
+    Certificates {
+        certificate_chain: Vec<CertificateDer<'static>>,
+        private_key: rustls::pki_types::PrivateKeyDer<'static>,
+    },
+}
+
+impl SystemClientConfigBuilder {
+    /// Starts with system trust and the supplied ALPN offerings.
+    pub fn new(provider: Arc<CryptoProvider>, alpn_protocols: Vec<Vec<u8>>) -> Self {
+        Self {
+            provider,
+            trust: ClientTrust::System,
+            alpn_protocols,
+            protocol_versions: None,
+            client_auth: ClientAuthentication::None,
+        }
+    }
+
+    /// Replaces the system trust store with an explicit one.
+    ///
+    /// Replacement never merges with system roots.
+    pub fn root_certificates(mut self, roots: rustls::RootCertStore) -> Self {
+        self.trust = ClientTrust::Explicit(roots);
+        self
+    }
+
+    /// Adds one trust anchor, snapshotting system roots first when needed.
+    pub fn add_root_certificate(
+        mut self,
+        certificate: CertificateDer<'static>,
+    ) -> Result<Self, SystemTrustError> {
+        let roots = match &mut self.trust {
+            ClientTrust::Explicit(roots) => roots,
+            ClientTrust::System => {
+                let snapshot = system_roots_snapshot(&self.provider)?;
+                self.trust = ClientTrust::Explicit(snapshot);
+                let ClientTrust::Explicit(roots) = &mut self.trust else {
+                    unreachable!("trust was just replaced");
+                };
+                roots
+            }
+        };
+        roots.add(certificate).map_err(|error| {
+            SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!("trust anchor is unusable: {error}"),
+            )
+        })?;
+        Ok(self)
+    }
+
+    /// Replaces the ALPN offerings sent during TLS negotiation.
+    pub fn alpn_protocols(mut self, protocols: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        self.alpn_protocols = protocols.into_iter().collect();
+        self
+    }
+
+    /// Restricts TLS negotiation to exactly these protocol versions.
+    pub fn protocol_versions(
+        mut self,
+        versions: impl IntoIterator<Item = &'static rustls::SupportedProtocolVersion>,
+    ) -> Self {
+        self.protocol_versions = Some(versions.into_iter().collect());
+        self
+    }
+
+    /// Configures no TLS client authentication, which is the default.
+    pub fn no_client_auth(mut self) -> Self {
+        self.client_auth = ClientAuthentication::None;
+        self
+    }
+
+    /// Configures a certificate chain and private key for mutual TLS.
+    pub fn client_auth(
+        mut self,
+        certificate_chain: Vec<CertificateDer<'static>>,
+        private_key: rustls::pki_types::PrivateKeyDer<'static>,
+    ) -> Self {
+        self.client_auth = ClientAuthentication::Certificates {
+            certificate_chain,
+            private_key,
+        };
+        self
+    }
+
+    /// Finishes the Rustls configuration.
+    pub fn build(self) -> Result<rustls::ClientConfig, SystemTrustError> {
+        self.build_with_trust_source().map(|(config, _)| config)
+    }
+
+    /// Finishes the Rustls configuration and reports the trust source used.
+    pub fn build_with_trust_source(
+        self,
+    ) -> Result<(rustls::ClientConfig, ClientTrustSource), SystemTrustError> {
+        match (self.trust, self.client_auth) {
+            (ClientTrust::System, ClientAuthentication::None) => {
+                let (config, source) = system_client_config_with_source(
+                    self.provider,
+                    self.alpn_protocols,
+                    self.protocol_versions,
+                )?;
+                Ok((config, ClientTrustSource::System(source)))
+            }
+            (
+                ClientTrust::System,
+                ClientAuthentication::Certificates {
+                    certificate_chain,
+                    private_key,
+                },
+            ) => {
+                let (config, source) = system_client_config_with_auth_and_source(
+                    self.provider,
+                    self.alpn_protocols,
+                    self.protocol_versions,
+                    certificate_chain,
+                    private_key,
+                )?;
+                Ok((config, ClientTrustSource::System(source)))
+            }
+            (ClientTrust::Explicit(roots), client_auth) => {
+                let builder = rustls::ClientConfig::builder_with_provider(self.provider);
+                let builder = match self.protocol_versions {
+                    Some(versions) => builder.with_protocol_versions(&versions).map_err(
+                        |error| {
+                            SystemTrustError::new(
+                                SystemTrustErrorKind::Unsupported,
+                                format!("TLS protocol versions are unsupported: {error}"),
+                            )
+                        },
+                    )?,
+                    None => builder.with_safe_default_protocol_versions().map_err(
+                        |error| {
+                            SystemTrustError::new(
+                                SystemTrustErrorKind::Unsupported,
+                                format!("TLS protocol versions are unsupported: {error}"),
+                            )
+                        },
+                    )?,
+                };
+                let mut config = match client_auth {
+                    ClientAuthentication::None => {
+                        builder.with_root_certificates(roots).with_no_client_auth()
+                    }
+                    ClientAuthentication::Certificates {
+                        certificate_chain,
+                        private_key,
+                    } => builder
+                        .with_root_certificates(roots)
+                        .with_client_auth_cert(certificate_chain, private_key)
+                        .map_err(|error| {
+                            SystemTrustError::new(
+                                SystemTrustErrorKind::Invalid,
+                                format!("client identity is invalid: {error}"),
+                            )
+                        })?,
+                };
+                config.alpn_protocols = self.alpn_protocols;
+                Ok((config, ClientTrustSource::ExplicitRoots))
+            }
+        }
+    }
 }
 
 /// Snapshots the current system roots into an explicit store.
@@ -367,14 +716,16 @@ pub fn system_roots_snapshot(
             .first()
             .map(|error| error.to_string())
             .unwrap_or_else(|| "no CA certificates found".to_string());
-        return Err(SystemTrustError::new(format!(
-            "no usable CA certificates: {detail}"
-        )));
+        return Err(SystemTrustError::new(
+            SystemTrustErrorKind::Empty,
+            format!("no usable CA certificates: {detail}"),
+        ));
     }
     let mut roots = rustls::RootCertStore::empty();
     let _ = roots.add_parsable_certificates(result.certs);
     if roots.is_empty() {
         return Err(SystemTrustError::new(
+            SystemTrustErrorKind::Empty,
             "no parsable CA certificates in the system store",
         ));
     }
@@ -415,16 +766,16 @@ fn require_designated_file_usable(designated: Option<&Path>) -> Result<(), Syste
         return Ok(());
     };
     let bytes = std::fs::read(path).map_err(|error| {
-        SystemTrustError::new(format!(
-            "designated CA file {} is unreadable: {error}",
-            path.display()
-        ))
+        SystemTrustError::new(
+            SystemTrustErrorKind::Unreadable,
+            format!("designated CA file {} is unreadable: {error}", path.display()),
+        )
     })?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
-        SystemTrustError::new(format!(
-            "designated CA file {} is not UTF-8 PEM",
-            path.display()
-        ))
+        SystemTrustError::new(
+            SystemTrustErrorKind::Invalid,
+            format!("designated CA file {} is not UTF-8 PEM", path.display()),
+        )
     })?;
     let mut blocks = 0;
     let mut usable = 0;
@@ -432,10 +783,13 @@ fn require_designated_file_usable(designated: Option<&Path>) -> Result<(), Syste
     while let Some(begin) = rest.find("-----BEGIN CERTIFICATE-----") {
         let after_begin = &rest[begin + "-----BEGIN CERTIFICATE-----".len()..];
         let Some(end) = after_begin.find("-----END CERTIFICATE-----") else {
-            return Err(SystemTrustError::new(format!(
-                "designated CA file {} has an unterminated CERTIFICATE block",
-                path.display()
-            )));
+            return Err(SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!(
+                    "designated CA file {} has an unterminated CERTIFICATE block",
+                    path.display()
+                ),
+            ));
         };
         blocks += 1;
         let encoded: String = after_begin[..end]
@@ -447,26 +801,35 @@ fn require_designated_file_usable(designated: Option<&Path>) -> Result<(), Syste
             encoded.as_bytes(),
         )
         .map_err(|error| {
-            SystemTrustError::new(format!(
-                "designated CA file {} has an undecodable CERTIFICATE block: {error}",
-                path.display()
-            ))
+            SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!(
+                    "designated CA file {} has an undecodable CERTIFICATE block: {error}",
+                    path.display()
+                ),
+            )
         })?;
         let mut probe = rustls::RootCertStore::empty();
         probe.add(CertificateDer::from(der)).map_err(|error| {
-            SystemTrustError::new(format!(
-                "designated CA file {} has an unusable root: {error:?}",
-                path.display()
-            ))
+            SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!(
+                    "designated CA file {} has an unusable root: {error:?}",
+                    path.display()
+                ),
+            )
         })?;
         usable += 1;
         rest = &after_begin[end + "-----END CERTIFICATE-----".len()..];
     }
     if blocks == 0 || usable == 0 {
-        return Err(SystemTrustError::new(format!(
-            "designated CA file {} contains no usable certificates",
-            path.display()
-        )));
+        return Err(SystemTrustError::new(
+            SystemTrustErrorKind::Empty,
+            format!(
+                "designated CA file {} contains no usable certificates",
+                path.display()
+            ),
+        ));
     }
     Ok(())
 }
@@ -488,23 +851,28 @@ fn load_native_verifier(
             .first()
             .map(|error| error.to_string())
             .unwrap_or_else(|| "no CA certificates found".to_string());
-        return Err(SystemTrustError::new(format!(
-            "no usable CA certificates: {detail}"
-        )));
+        return Err(SystemTrustError::new(
+            SystemTrustErrorKind::Empty,
+            format!("no usable CA certificates: {detail}"),
+        ));
     }
     let mut roots = rustls::RootCertStore::empty();
     let (added, _ignored) = roots.add_parsable_certificates(result.certs);
     if roots.is_empty() {
-        return Err(SystemTrustError::new(format!(
-            "no parsable CA certificates ({added} decoded, none usable)"
-        )));
+        return Err(SystemTrustError::new(
+            SystemTrustErrorKind::Empty,
+            format!("no parsable CA certificates ({added} decoded, none usable)"),
+        ));
     }
     let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
         Arc::new(roots),
         provider.clone(),
     )
     .build()
-    .map_err(|error| SystemTrustError::new(format!("system verifier failed to build: {error}")))?;
+    .map_err(|error| SystemTrustError::new(
+        SystemTrustErrorKind::Unavailable,
+        format!("system verifier failed to build: {error}"),
+    ))?;
     Ok((verifier, fingerprint))
 }
 
@@ -640,13 +1008,16 @@ impl TrustFingerprint {
 
     fn track_file(path: PathBuf) -> Result<TrackedFile, SystemTrustError> {
         let metadata = std::fs::metadata(&path).map_err(|error| {
-            SystemTrustError::new(format!("trust file {} is unreadable: {error}", path.display()))
+            SystemTrustError::new(
+            SystemTrustErrorKind::Unreadable,
+            format!("trust file {} is unreadable: {error}", path.display()),
+        )
         })?;
         if !metadata.is_file() {
-            return Err(SystemTrustError::new(format!(
-                "trust path {} is not a file",
-                path.display()
-            )));
+            return Err(SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!("trust path {} is not a file", path.display()),
+            ));
         }
         Ok(TrackedFile {
             path: path.clone(),
@@ -658,37 +1029,40 @@ impl TrustFingerprint {
 
     fn track_dir(path: &Path) -> Result<TrackedDir, SystemTrustError> {
         let metadata = std::fs::metadata(path).map_err(|error| {
-            SystemTrustError::new(format!(
-                "trust directory {} is unreadable: {error}",
-                path.display()
-            ))
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unreadable,
+                format!("trust directory {} is unreadable: {error}", path.display()),
+            )
         })?;
         if !metadata.is_dir() {
-            return Err(SystemTrustError::new(format!(
-                "trust path {} is not a directory",
-                path.display()
-            )));
+            return Err(SystemTrustError::new(
+                SystemTrustErrorKind::Invalid,
+                format!("trust path {} is not a directory", path.display()),
+            ));
         }
         let mut entries = BTreeMap::new();
         let listing = std::fs::read_dir(path).map_err(|error| {
-            SystemTrustError::new(format!(
-                "trust directory {} cannot be listed: {error}",
-                path.display()
-            ))
+            SystemTrustError::new(
+                SystemTrustErrorKind::Unreadable,
+                format!("trust directory {} cannot be listed: {error}", path.display()),
+            )
         })?;
         for entry in listing {
             let entry = entry.map_err(|error| {
-                SystemTrustError::new(format!(
-                    "trust directory {} has an unreadable entry: {error}",
-                    path.display()
-                ))
+                SystemTrustError::new(
+                    SystemTrustErrorKind::Unreadable,
+                    format!(
+                        "trust directory {} has an unreadable entry: {error}",
+                        path.display()
+                    ),
+                )
             })?;
             let entry_path = entry.path();
             let entry_metadata = std::fs::metadata(&entry_path).map_err(|error| {
-                SystemTrustError::new(format!(
-                    "trust entry {} is unreadable: {error}",
-                    entry_path.display()
-                ))
+                SystemTrustError::new(
+                    SystemTrustErrorKind::Unreadable,
+                    format!("trust entry {} is unreadable: {error}", entry_path.display()),
+                )
             })?;
             if !entry_metadata.is_file() {
                 continue;
@@ -710,5 +1084,52 @@ impl TrustFingerprint {
             identity: file_identity(path),
             entries,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn designated_bundle_failures_are_classified() {
+        let directory = std::env::temp_dir().join(format!(
+            "h12tiny-tls-system-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let missing = directory.join("missing.pem");
+        let error = require_designated_file_usable(Some(&missing)).unwrap_err();
+        assert_eq!(error.kind(), SystemTrustErrorKind::Unreadable);
+
+        let malformed = directory.join("malformed.pem");
+        std::fs::write(
+            &malformed,
+            "-----BEGIN CERTIFICATE-----\n!!!not-base64!!!\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let error = require_designated_file_usable(Some(&malformed)).unwrap_err();
+        assert_eq!(error.kind(), SystemTrustErrorKind::Invalid);
+
+        let empty = directory.join("empty.pem");
+        std::fs::write(&empty, "").unwrap();
+        let error = require_designated_file_usable(Some(&empty)).unwrap_err();
+        assert_eq!(error.kind(), SystemTrustErrorKind::Empty);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reload_classification_is_explicit() {
+        let first_load =
+            SystemTrustError::new(SystemTrustErrorKind::Unavailable, "first load");
+        assert!(!first_load.is_reload());
+        assert_eq!(first_load.kind(), SystemTrustErrorKind::Unavailable);
+
+        let reload = SystemTrustError::new(SystemTrustErrorKind::Unreadable, "reload")
+            .during_reload(true);
+        assert!(reload.is_reload());
+        assert_eq!(reload.kind(), SystemTrustErrorKind::Unreadable);
     }
 }
