@@ -77,4 +77,5 @@ repository's `.work/tmp` for its backup files. See the
 
 External interoperability and performance runs require separate tools and
 endpoint setup; see the [scripts guide](../scripts/README.md). Performance
-measurements are not correctness checks.
+measurements are not correctness checks. The HTTP/1.1, HTTP/2, client-pool,
+and router campaign record is in [performance](performance/README.md).

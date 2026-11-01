@@ -16,7 +16,7 @@ Environment controls:
   H12TINY_BENCH_URL          base URL (default: http://127.0.0.1:3000)
   H12TINY_BENCH_TLS          1 passes --insecure to oha (default: 0)
   H12TINY_BENCH_REQUESTS     requests per run (default: 20000)
-  H12TINY_BENCH_PATHS        endpoint paths (default: "/0 /1k /64k /1m /headers")
+  H12TINY_BENCH_PATHS        endpoint paths (default: "/0 /1k /64k /headers")
   H12TINY_BENCH_CONNECTIONS  connection counts (default: "1 16 128")
   H12TINY_BENCH_STREAMS      H2 streams per connection (default: 16)
   H12TINY_BENCH_DIR          output directory (default: .work/bench/<timestamp>)
@@ -47,7 +47,7 @@ require_tool h2load
 base=${H12TINY_BENCH_URL:-http://127.0.0.1:3000}
 tls=${H12TINY_BENCH_TLS:-0}
 requests=${H12TINY_BENCH_REQUESTS:-20000}
-paths=${H12TINY_BENCH_PATHS:-"/0 /1k /64k /1m /headers"}
+paths=${H12TINY_BENCH_PATHS:-"/0 /1k /64k /headers"}
 connections=${H12TINY_BENCH_CONNECTIONS:-"1 16 128"}
 streams=${H12TINY_BENCH_STREAMS:-16}
 out=${H12TINY_BENCH_DIR:-.work/bench/$(date +%Y%m%d-%H%M%S)}

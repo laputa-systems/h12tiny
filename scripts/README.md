@@ -10,7 +10,8 @@ It listens on `http://127.0.0.1:3000` and
 `https://127.0.0.1:3443` by default. The TLS listener uses the committed
 localhost fixture and advertises `h2,http/1.1`; its certificate is suitable
 for local `curl --insecure`/`nghttp -y` checks only. Endpoints are `/0`,
-`/1k`, and `/64k`.
+`/1k`, `/64k`, `/1m`, and `/headers`; `/headers` returns 32 repeated
+`x-bench-NN` headers with an empty body.
 
 For external checks, point the harness at complete endpoint URLs. The
 independent URL should be an h2c endpoint from `nghttpd`, or an HTTPS server
@@ -43,6 +44,23 @@ specialist H2 measurement. It defaults to bounded H2 windows (`16` stream
 bits, `20` connection bits) so results do not silently represent an
 effectively unlimited-flow-control workload. See `--help` on either script
 for all environment controls.
+
+For a repeated comparison across endpoints and connection counts, run the
+matrix against a server that is already listening:
+
+```sh
+scripts/bench-matrix.sh
+```
+
+It runs oha for H1 and h2load for H2 over `/0`, `/1k`, `/64k`, and
+`/headers` at 1, 16, and 128 connections by default, keeps the raw output
+under `.work/bench/<timestamp>/`, and prints requests per second per cell. Use
+`H12TINY_BENCH_URL`, `H12TINY_BENCH_TLS`, `H12TINY_BENCH_REQUESTS`,
+`H12TINY_BENCH_PATHS`, `H12TINY_BENCH_CONNECTIONS`, and
+`H12TINY_BENCH_STREAMS` to narrow a run, for example
+`H12TINY_BENCH_PATHS=/1m H12TINY_BENCH_REQUESTS=2000` for the 1 MiB body.
+`bench.sh` remains the single H1/H2 pair measurement that also supports the
+direct-Hyper reference URL.
 
 For an H2 endpoint-layer comparison, start the direct-Hyper reference on its
 separate listener (port 3001 by default). It shares the service, executor, and
