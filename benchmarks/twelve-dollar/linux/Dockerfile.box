@@ -1,0 +1,33 @@
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+
+ARG RUST_TOOLCHAIN
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        iproute2 \
+        jq \
+        nginx \
+        openssl \
+        pkg-config \
+        procps \
+        sqlite3 \
+        strace \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN test -n "$RUST_TOOLCHAIN" \
+ && curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh \
+ && sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN" \
+ && rustup component add --toolchain "$RUST_TOOLCHAIN" rust-src llvm-tools clippy \
+ && rm /tmp/rustup-init.sh \
+ && rustc -Vv
+
+COPY nginx.conf /etc/nginx/nginx.conf
