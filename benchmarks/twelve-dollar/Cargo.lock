@@ -199,9 +199,12 @@ name = "h12tiny-app"
 version = "0.1.0"
 dependencies = [
  "app-core",
+ "base64",
  "h12tiny",
+ "hmac",
  "laputa-smol",
  "serde_json",
+ "sha2",
  "signal-hook",
 ]
 

@@ -16,3 +16,8 @@ h12tiny = { workspace = true, features = ["server", "web", "http1"] }
 serde_json = { workspace = true }
 signal-hook = { workspace = true }
 smol = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
