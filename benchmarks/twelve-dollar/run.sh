@@ -24,10 +24,11 @@ usage() {
   cat >&2 <<'EOF'
 usage: run.sh [box|macos] [--profile box|macos] [--mode nginx|direct] [options] <command>
 
-commands: setup, box-check, test, smoke
-not implemented yet: search, confirm, attribute, report, ceiling
+commands: setup, box-check, test, smoke, ceiling
+not implemented yet: search, confirm, attribute, report
 
 smoke options: --vus N (50), --duration 30s, --ramp-up 10s
+ceiling always probes both modes with 60 s ramp and 60 s hold
 
 defaults: --profile box --mode nginx
 EOF
@@ -539,6 +540,38 @@ cmd_smoke() {
   echo "== results $result_dir"
 }
 
+cmd_ceiling() {
+  require_docker
+  require_challenge
+  box_running || die "box $BOX is not running; run: bash $HERE/run.sh setup"
+  [ -f "$HERE/tools/ceiling.sh" ] || die "missing $HERE/tools/ceiling.sh"
+  [ -f "$HERE/start-static.sh" ] || die "missing $HERE/start-static.sh"
+
+  build_in_builder
+
+  if [ -n "$(git -C "$CHALLENGE" status --porcelain)" ]; then
+    die "challenge checkout is dirty: $CHALLENGE"
+  fi
+
+  run_id="ceiling-$(date -u +%Y%m%dT%H%M%SZ)"
+  result_dir="$STATE/results/$run_id"
+  [ ! -e "$result_dir" ] || die "result directory already exists: $result_dir"
+  mkdir -p "$STATE/results"
+
+  bash "$HERE/tools/ceiling.sh" \
+    --out "$result_dir" \
+    --challenge "$CHALLENGE" \
+    --box "$BOX" \
+    --net "$NET" \
+    --runs-volume "$RUNS_VOL" \
+    --k6-image "$K6_IMAGE" \
+    --bench "$HERE" \
+    --ramp-up 60 \
+    --duration 60
+
+  echo "== results $result_dir"
+}
+
 profile=box
 mode=nginx
 command=""
@@ -653,7 +686,8 @@ case "$command" in
   box-check) cmd_box_check ;;
   test) cmd_test ;;
   smoke) cmd_smoke ;;
-  search|confirm|attribute|report|ceiling)
+  ceiling) cmd_ceiling ;;
+  search|confirm|attribute|report)
     echo "command $command is not implemented yet" >&2
     exit 2
     ;;
