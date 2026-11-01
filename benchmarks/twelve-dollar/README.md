@@ -25,6 +25,17 @@ confirmation. A deferred search or confirmation can be resumed with the same
 command, revision, reader count, and measured ceiling. Results and search state
 live under `.work/twelve-dollar/`.
 
+## Measured configuration
+
+- Reader threads: 2 (`TWELVE_DOLLAR_READERS`). At 500 VUs, runs with 1, 2, and
+  4 readers were indistinguishable: 38.0–38.8 req/s and 1.5–1.9 % of the
+  1-CPU box, with a 0.47–0.68 ms p50. The executor thread count is logged at
+  startup (1 in the box, 18 on this macOS host).
+- Generator ceilings (`run.sh box ceiling`, 2026-11-01): nginx 14,000 VUs and
+  direct 25,000 VUs, both at the D8 caps rather than generator saturation. k6
+  used 130 % CPU and 37.6 % memory at 14,000 VUs, and 353 % CPU and 67.3 %
+  memory at 25,000 VUs, with no dropped iterations.
+
 ## Loop timings
 
 Measured 2026-11-01 on h12tiny `1c24cdd`, aarch64 macOS, with the debug target
