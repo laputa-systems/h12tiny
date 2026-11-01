@@ -3,6 +3,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/perf-gate.sh"
+source "$HERE/k6-summary.sh"
 BENCH="$(cd "$HERE/.." && pwd)"
 
 BOX=h12t-twelve-box
@@ -548,6 +549,14 @@ run_probe() {
   fi
   if [ "$has_summary" != true ]; then
     add_invalid "k6 did not write a summary export"
+  elif ! valid_k6_generator_metrics "$dir/k6-summary.json"; then
+    add_invalid "k6 summary has missing or malformed request or generator metrics"
+  fi
+  if [ "$http_reqs" != "$http_reqs_stdout" ]; then
+    add_invalid "k6 summary and stdout request counts differ"
+  fi
+  if [ -z "$summary_line" ]; then
+    add_invalid "static app shutdown summary is missing"
   fi
   if [ "$rejected" -gt 0 ]; then
     add_invalid "the static app rejected $rejected connections"
