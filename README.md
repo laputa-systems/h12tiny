@@ -19,10 +19,9 @@ http-body-util = "0.1"
 smol = "2"
 ```
 
-The facade, client, server, and web crates require Rust 1.89. Core,
-normalization, and body utilities require Rust 1.85. Component
-crates can be used directly when you want a smaller dependency graph; see
-[feature selection](docs/features.md).
+The facade requires Rust 1.89, declared in its manifest. Component crates can
+be used directly when you want a smaller dependency graph; each declares its
+own `rust-version` in its manifest. See [feature selection](docs/features.md).
 
 ## Make an async request
 
@@ -58,17 +57,13 @@ settings are described in
 
 ## Choose features
 
-| Use | Facade features |
-| --- | --- |
-| Async client | `client`, `http1` and/or `http2`; add `tls` for HTTPS |
-| Blocking client | `client-sync`; add `tls` for HTTPS |
-| Server | `server`, `http1` and/or `http2`; add `tls` for HTTPS |
-| Router and extractors | `web`, `http1` and/or `http2` |
-| JSON, query, SSE, CORS, raw upgrade, WebSocket | `json`, `query`, `sse`, `cors`, `upgrade`, `websocket` as needed |
+Choose a role and only the protocols it needs; protocol flags alone do not add
+a client or server. The complete facade and component feature table, including
+the role-selecting `upgrade` and `websocket` features, is in
+[feature selection](docs/features.md).
 
-Protocol features do not select client or server roles by themselves.
-`websocket` enables the HTTP/1.1 upgrade surface. See
-[feature selection](docs/features.md) for component-crate and isolation details.
+Concrete client, server, and web timeouts and size limits are in
+[limits](docs/limits.md).
 
 ## License
 

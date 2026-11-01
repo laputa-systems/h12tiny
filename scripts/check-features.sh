@@ -44,6 +44,22 @@ check_forbidden() {
     done
 }
 
+require_single_version() {
+    package=$1
+    versions=$(tree --workspace --all-features | awk -v package="$package" '$1 == package { print $2 }' | sort -u)
+    count=$(printf '%s\n' "$versions" | awk 'NF { count++ } END { print count + 0 }')
+    if [ "$count" -eq 0 ]; then
+        printf '%s is absent from the all-features workspace graph\n' "$package" >&2
+        exit 1
+    fi
+    if [ "$count" -gt 1 ]; then
+        printf '%s resolves to multiple versions:\n%s\n' "$package" "$versions" >&2
+        exit 1
+    fi
+}
+
+require_single_version base64
+
 client_h1=$(tree -p h12tiny-client --no-default-features --features http1)
 client_h2=$(tree -p h12tiny-client --no-default-features --features http2)
 client_h1_tls=$(tree -p h12tiny-client --no-default-features --features http1,tls)

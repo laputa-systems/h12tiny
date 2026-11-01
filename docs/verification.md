@@ -16,8 +16,9 @@ workspace checks below are the broader integration gates.
   `full`. Dev and optional packages in Cargo.lock are not a policy failure.
 - `scripts/miri-io.sh` runs the focused unsafe I/O adapter tests under nightly
   Miri.
-- `sh scripts/check-msrv.sh` checks the h12tiny component MSRVs listed in that
-  script across their supported feature selections.
+- `sh scripts/check-msrv.sh` reads every workspace member from `cargo metadata`
+  and checks it with that member's declared `rust-version` and all features,
+  then keeps the workspace-excluded fork checks.
 - H2 unit tests: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --lib`.
 - H2 flow control: `cargo test --manifest-path crates/laputa-h2-futures-lite/Cargo.toml --test flow_control_futures`.
 - Hyper: `cargo check --manifest-path crates/laputa-hyper-futures-lite/Cargo.toml --features full`.
@@ -27,6 +28,9 @@ workspace checks below are the broader integration gates.
   `--check-ledger` to validate `docs/fork-test-parity.md`. CI runs the full gate
   on Linux; the individual commands above are for iterating on one fork, not a
   substitute for the gate.
+
+The concrete client, server, and web timeouts and size limits are listed in
+[limits](limits.md).
 
 The integration tests cover adversarial H1 framing, H2 lifecycle and
 cancellation, cleartext and TLS protocol selection, system-trust defaults and

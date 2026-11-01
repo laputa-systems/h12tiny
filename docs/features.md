@@ -7,16 +7,18 @@ Choose a role, then enable only the protocols and conveniences it needs.
 
 | Feature | Effect |
 | --- | --- |
-| `client`, `client-sync`, `server`, `util`, `web` | Select the corresponding component; `web` also selects server and util |
+| `core`, `client`, `client-sync`, `server`, `util`, `web` | Select the corresponding component; `client` and `server` also select core, and `web` also selects server and util |
 | `http1`, `http2`, `tls` | Forward to already-selected async client/server roles and, for TLS, the selected blocking client |
 | `json` | Selects util JSON and forwards it to web if selected |
 | `query`, `sse`, `cors` | Selects the corresponding web convenience |
-| `upgrade` | Selects server HTTP/1.1 raw upgrade support |
-| `websocket` | Selects web, raw HTTP/1.1 upgrade, and the RFC 6455 adapter |
+| `upgrade` | Selects `server` and `http1`, plus server HTTP/1.1 raw upgrade support and the same support in web when selected |
+| `websocket` | Selects `web` and `upgrade`, so it also selects `server`, `util`, and `http1`, plus the RFC 6455 adapter |
 | `full` | Explicitly selects all components and optional features |
 
 Protocol features do not select a role by themselves. For example, `http1`
 alone does not add a client or server. `web` does not select H1, H2, or TLS.
+`upgrade` and `websocket` are role-selecting conveniences rather than
+protocol flags.
 
 ## Component features
 

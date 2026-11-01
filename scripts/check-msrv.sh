@@ -1,10 +1,21 @@
 #!/usr/bin/env sh
-# Check each component with the Rust version declared by its own manifest.
+# Check each workspace member with the Rust version declared by its manifest.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 installed_toolchains=''
+
+json() {
+    if command -v jaq >/dev/null 2>&1; then
+        jaq "$@"
+    elif command -v jq >/dev/null 2>&1; then
+        jq "$@"
+    else
+        printf '%s\n' 'reading cargo metadata requires jaq or jq' >&2
+        exit 1
+    fi
+}
 
 declared_rust_version() {
     awk '
@@ -30,11 +41,14 @@ ensure_toolchain() {
 }
 
 check() {
-    manifest=$1
-    shift
-    version=$(declared_rust_version "$manifest")
+    version=$1
+    manifest=$2
+    if [ -z "$version" ] || [ "$version" = "null" ]; then
+        printf '%s does not declare rust-version\n' "$manifest" >&2
+        exit 1
+    fi
     ensure_toolchain "$version.0"
-    cargo "+$version.0" check --locked --manifest-path "$manifest" "$@"
+    cargo "+$version.0" check --locked --manifest-path "$manifest" --all-features
 }
 
 # The forks are excluded from the workspace and do not keep a lockfile.
@@ -46,24 +60,19 @@ check_fork() {
     cargo "+$version.0" check --manifest-path "$manifest" "$@"
 }
 
-# These components still declare Rust 1.85 as their minimum supported version.
-check crates/h12tiny-core/Cargo.toml
-check crates/h12tiny-client-normalize/Cargo.toml
-check crates/h12tiny-util/Cargo.toml --all-features
+metadata=$(cargo metadata --no-deps --format-version 1)
+members=$(printf '%s\n' "$metadata" | json -r '.packages[] | "\(.rust_version)\t\(.manifest_path)"')
+if [ -z "$members" ]; then
+    printf '%s\n' 'cargo metadata returned no workspace members' >&2
+    exit 1
+fi
 
-# These components declare Rust 1.89, so both their plain and TLS feature
-# selections are checked with that compiler.
-check crates/h12tiny-client/Cargo.toml --no-default-features --features http1,http2
-check crates/h12tiny-client-sync/Cargo.toml --no-default-features
-check crates/h12tiny-server/Cargo.toml --no-default-features --features http1,http2
-check crates/h12tiny-tls-system/Cargo.toml
-
-# The facade and WebSocket-enabled web component also declare Rust 1.89.
-check Cargo.toml --workspace --all-features
-check crates/h12tiny-client/Cargo.toml --no-default-features --features http1,http2,tls
-check crates/h12tiny-client-sync/Cargo.toml --no-default-features --features tls
-check crates/h12tiny-server/Cargo.toml --no-default-features --features http1,http2,tls
-check crates/h12tiny-web/Cargo.toml --all-features
+# Each member is checked with its own declared minimum and every feature.
+while IFS="$(printf '\t')" read -r version manifest; do
+    check "$version" "$manifest"
+done <<EOF
+$members
+EOF
 
 check_fork crates/laputa-h2-futures-lite/Cargo.toml -p laputa-h2-futures-lite
 check_fork crates/laputa-hyper-futures-lite/Cargo.toml --features full

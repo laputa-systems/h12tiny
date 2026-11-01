@@ -1,5 +1,5 @@
 Prefix: H12T
-Next: 16
+Next: 17
 
 ### H12T-12 · P1 · Unbounded retry, fail-open defaults, and deadline-free shutdown
 
@@ -20,11 +20,4 @@ Next: 16
 - **Fix with:** `security`
 - **Effort:** M
 
-### H12T-16 · P3 · Topology, versions, and limits are stated in several places
 
-- **Area:** Config
-- **Where:** `Cargo.toml:53-75`, `docs/features.md:8-36`, `README.md:61-67`, `scripts/check-features.sh:47-170`, `scripts/check-msrv.sh:50-70`, `crates/h12tiny-web/Cargo.toml:24`
-- **Problem:** Facade flags live in the manifest, two prose tables, and a shell-script oracle that is the only executable truth; the README table already hides the `upgrade`-implies-`server` auto-selection. MSRV is split 1.85/1.89 across manifests plus a hand-maintained script list plus prose. Timeouts and limits are magic numbers in five crates with no limits table. `base64` resolves to two majors (`0.22` workspace vs `0.23.1` in web). README facade version was `0.3` against manifest `0.6.0` (fixed in this pass).
-- **Recommendation:** Generate the feature/MSRV tables from manifests or collapse to one table plus the script; add one documented limits table; unify on one `base64` major with a duplicate-version lint.
-- **Fix with:** `single-source-of-truth`
-- **Effort:** S
