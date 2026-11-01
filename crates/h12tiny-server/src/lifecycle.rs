@@ -11,16 +11,18 @@
 use futures_channel::oneshot;
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::future::{self, Either};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use h12tiny_core::io::FuturesIo;
 use h12tiny_core::runtime::BoxExecutor;
 use hyper::body::Body;
 use hyper::service::Service;
+use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 
 /// The error delivered to the optional connection error hook.
 pub type ConnectionError = Box<dyn StdError + Send + Sync>;
@@ -258,36 +260,81 @@ where
     }
 }
 
-struct Active {
-    shutdown: Option<oneshot::Sender<()>>,
+// Completion futures register only their own waker. Polling the listener must
+// not inspect every live connection: most keep-alive connections are idle.
+struct Completed {
+    id: u64,
     done: oneshot::Receiver<()>,
+}
+
+impl Future for Completed {
+    type Output = u64;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Pin::new(&mut this.done).poll(cx).map(|_| this.id)
+    }
+}
+
+struct ActiveSet {
+    // Keep shutdown ownership separate from completion notifications so a
+    // completed connection can be removed in O(1) rather than scanning all
+    // receivers on every accept-loop wake.
+    shutdowns: HashMap<u64, oneshot::Sender<()>>,
+    completed: FuturesUnordered<Completed>,
+    next_id: u64,
+}
+
+impl ActiveSet {
+    fn new() -> Self {
+        Self {
+            shutdowns: HashMap::new(),
+            completed: FuturesUnordered::new(),
+            next_id: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.completed.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.completed.is_empty()
+    }
+
+    fn insert(&mut self, shutdown: oneshot::Sender<()>, done: oneshot::Receiver<()>) {
+        let id = self.next_id;
+        self.next_id = self.next_id.checked_add(1).expect("connection id overflow");
+        self.shutdowns.insert(id, shutdown);
+        self.completed.push(Completed { id, done });
+    }
+
+    fn poll_done(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        match self.completed.poll_next_unpin(cx) {
+            Poll::Ready(Some(id)) => {
+                self.shutdowns.remove(&id);
+                Poll::Ready(())
+            }
+            Poll::Ready(None) | Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn shutdown(&mut self) {
+        for (_, sender) in self.shutdowns.drain() {
+            let _ = sender.send(());
+        }
+    }
 }
 
 enum Event<S, A> {
     Shutdown,
     Accepted(io::Result<(S, A)>),
-    Done(usize),
+    Done,
 }
 
-async fn drain_active(active: &mut Vec<Active>) {
-    for connection in active.iter_mut() {
-        if let Some(shutdown) = connection.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-    }
-
-    while !active.is_empty() {
-        let index = future::poll_fn(|cx| {
-            for (index, connection) in active.iter_mut().enumerate() {
-                if Pin::new(&mut connection.done).poll(cx).is_ready() {
-                    return Poll::Ready(index);
-                }
-            }
-            Poll::Pending
-        })
-        .await;
-        active.swap_remove(index);
-    }
+async fn drain_active(active: &mut ActiveSet) {
+    active.shutdown();
+    while active.completed.next().await.is_some() {}
 }
 
 async fn run<L, S, B, F>(server: Serve<L, S>, shutdown: F) -> io::Result<()>
@@ -306,7 +353,7 @@ where
 {
     let mut shutdown = Box::pin(shutdown);
     let mut accept = Some(server.listener.accept());
-    let mut active: Vec<Active> = Vec::new();
+    let mut active = ActiveSet::new();
     let mut accepting = true;
 
     while accepting || !active.is_empty() {
@@ -315,11 +362,8 @@ where
                 return Poll::Ready(Event::Shutdown);
             }
 
-            for (index, connection) in active.iter_mut().enumerate() {
-                match Pin::new(&mut connection.done).poll(cx) {
-                    Poll::Ready(_) => return Poll::Ready(Event::Done(index)),
-                    Poll::Pending => {}
-                }
+            if active.poll_done(cx).is_ready() {
+                return Poll::Ready(Event::Done);
             }
 
             if accepting {
@@ -340,11 +384,7 @@ where
         match event {
             Event::Shutdown => {
                 accepting = false;
-                for connection in &mut active {
-                    if let Some(shutdown) = connection.shutdown.take() {
-                        let _ = shutdown.send(());
-                    }
-                }
+                active.shutdown();
             }
             Event::Accepted(result) => {
                 let (stream, _address) = match result {
@@ -384,19 +424,11 @@ where
                         }
                         let _ = done_tx.send(());
                     });
-                    active.push(Active {
-                        shutdown: Some(shutdown_tx),
-                        done: done_rx,
-                    });
+                    active.insert(shutdown_tx, done_rx);
                 }
                 accept = Some(server.listener.accept());
             }
-            Event::Done(index) => {
-                active.swap_remove(index);
-                if !accepting {
-                    continue;
-                }
-            }
+            Event::Done => {}
         }
     }
 
@@ -420,7 +452,7 @@ where
 {
     let mut shutdown = Box::pin(shutdown);
     let mut accept = Some(server.listener.accept());
-    let mut active: Vec<Active> = Vec::new();
+    let mut active = ActiveSet::new();
     let mut accepting = true;
 
     while accepting || !active.is_empty() {
@@ -429,10 +461,8 @@ where
                 return Poll::Ready(Event::Shutdown);
             }
 
-            for (index, connection) in active.iter_mut().enumerate() {
-                if Pin::new(&mut connection.done).poll(cx).is_ready() {
-                    return Poll::Ready(Event::Done(index));
-                }
+            if active.poll_done(cx).is_ready() {
+                return Poll::Ready(Event::Done);
             }
 
             if accepting {
@@ -451,11 +481,7 @@ where
         match event {
             Event::Shutdown => {
                 accepting = false;
-                for connection in &mut active {
-                    if let Some(shutdown) = connection.shutdown.take() {
-                        let _ = shutdown.send(());
-                    }
-                }
+                active.shutdown();
             }
             Event::Accepted(result) => {
                 let (stream, _address) = match result {
@@ -520,16 +546,11 @@ where
                         }
                         let _ = done_tx.send(());
                     });
-                    active.push(Active {
-                        shutdown: Some(shutdown_tx),
-                        done: done_rx,
-                    });
+                    active.insert(shutdown_tx, done_rx);
                 }
                 accept = Some(server.listener.accept());
             }
-            Event::Done(index) => {
-                active.swap_remove(index);
-            }
+            Event::Done => {}
         }
     }
 
@@ -538,7 +559,7 @@ where
 
 #[cfg(all(test, feature = "http1"))]
 mod tests {
-    use super::serve;
+    use super::{ActiveSet, drain_active, serve};
     use bytes::Bytes;
     use futures_channel::oneshot;
     use futures_lite::prelude::*;
@@ -595,6 +616,50 @@ mod tests {
         fn execute(&self, future: BoxSendFuture) {
             std::thread::spawn(move || futures_lite::future::block_on(future));
         }
+    }
+
+    #[test]
+    fn completed_connections_are_removed_without_scanning_peers() {
+        let mut active = ActiveSet::new();
+        let mut senders = Vec::new();
+        for _ in 0..128 {
+            let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+            let (done_tx, done_rx) = oneshot::channel();
+            active.insert(shutdown_tx, done_rx);
+            senders.push(done_tx);
+        }
+        assert_eq!(active.len(), 128);
+        // The completion queue must handle out-of-order connection teardown.
+        for sender in senders.into_iter().rev() {
+            sender.send(()).expect("completion receiver still live");
+        }
+        futures_lite::future::block_on(async {
+            for remaining in (0..128).rev() {
+                futures_util::future::poll_fn(|cx| active.poll_done(cx)).await;
+                assert_eq!(active.len(), remaining);
+            }
+        });
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn drain_signals_all_connections_and_waits_for_completion() {
+        let mut active = ActiveSet::new();
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let (shutdown_tx, shutdown_rx) = oneshot::channel();
+            let (done_tx, done_rx) = oneshot::channel();
+            active.insert(shutdown_tx, done_rx);
+            workers.push(std::thread::spawn(move || {
+                futures_lite::future::block_on(shutdown_rx).expect("shutdown signaled");
+                done_tx.send(()).expect("completion receiver still live");
+            }));
+        }
+        futures_lite::future::block_on(drain_active(&mut active));
+        for worker in workers {
+            worker.join().expect("connection task completed");
+        }
+        assert!(active.is_empty());
     }
 
     #[cfg(feature = "http1")]
