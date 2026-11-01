@@ -22,10 +22,15 @@ set -euo pipefail
 args=" $* "
 printf '%s\n' "$*" >> "$TWELVE_TEST_DIR/docker-calls"
 case "$args" in
-  *' run '*' --name h12t-twelve-k6 '*) printf '%s\n' "$$" > "$TWELVE_TEST_DIR/k6.pid"; exec sleep 120 ;;
+  *' run '*' --name h12t-twelve-k6 '*)
+    if [ "${TWELVE_TEST_COMPLETE:-false}" = true ]; then sleep 2; printf '%s\n' 'http_reqs....: 1'; exit 0; fi
+    printf '%s\n' "$$" > "$TWELVE_TEST_DIR/k6.pid"; exec sleep 120 ;;
+  *' stats '*) printf '%s\n' '{"CPUPerc":"1.00%","MemPerc":"1.00%"}' ;;
+  *' cp h12t-twelve-box:'*) cp "$TWELVE_TEST_DIR/fixtures/$(basename "$2")" "$3" ;;
   *' inspect '*'.State.Running'*) printf 'true\n' ;;
   *' inspect '*'.NetworkSettings.Networks'*) printf '127.0.0.1\n' ;;
   *' exec '*' pgrep '*) exit 1 ;;
+  *' exec '*' kill -0 '*) exit 1 ;;
   *' exec '*' ss '*) exit 0 ;;
   *' exec '*' cat /runs/'*'/app.pid '*) printf '111\n' ;;
   *' exec '*' cat /runs/'*'/collector.pid '*) printf '222\n' ;;
@@ -65,3 +70,14 @@ if kill -0 "$(cat "$test_dir/k6.pid")" 2>/dev/null; then echo 'generator survive
 rg -q '^exec h12t-twelve-box kill -TERM 222$' "$test_dir/docker-calls"
 rg -q '^exec h12t-twelve-box env PIDFILE=/runs/[^ ]+/app.pid bash /runs/[^ ]+/harness/box/app.sh stop$' "$test_dir/docker-calls"
 rg -q "^exec h12t-twelve-box rm -rf /runs/$run_id$" "$test_dir/docker-calls"
+mkdir -p "$test_dir/fixtures"
+printf '%s\n' '{"metrics":{"http_reqs":{"count":1,"rate":1},"http_req_duration":{"med":0.3,"p(95)":0.4,"p(99)":0.9,"max":1},"http_req_failed":{"value":0},"vus":{"max":1}}}' > "$test_dir/fixtures/k6-summary.json"
+printf '%s\n' 'sample,elapsed_s,clk_tck,app_pid,app_cpu_ticks,nginx_cpu_ticks,app_rss_kib,app_hwm_kib,app_fds,established,db_bytes,wal_bytes,memory_peak_bytes,memory_current_bytes,pids_current,cpu_nr_periods,cpu_nr_throttled' '1,0,100,1,1,0,1,1,10,1,100,0,1,1,1,100,10' '2,1,100,1,2,0,1,1,20,1,100,0,1,1,1,200,10' > "$test_dir/fixtures/metrics.csv"
+printf '%s\n' 'listening reader_threads=1 executor_threads=1' 'h12tiny-twelve shutdown accepted=1 rejected=0 responses=1 status_200=1' > "$test_dir/fixtures/app.log"
+: > "$test_dir/fixtures/bench.access.log"
+: > "$test_dir/fixtures/bench.error.log"
+rm -rf "$root/.work/twelve-dollar/results/$run_id"
+run_id="${run_id}-complete"
+PATH="$test_dir/bin:$PATH" TWELVE_TEST_DIR="$test_dir" TWELVE_TEST_COMPLETE=true TWELVE_DOLLAR_RUN_ID="$run_id" \
+  /bin/bash "$root/benchmarks/twelve-dollar/run.sh" box smoke --mode direct --vus 1 > "$test_dir/output" 2>&1 || { cat "$test_dir/output" >&2; exit 1; }
+jaq -e '.valid == true and .k6.http_reqs == 1 and .k6.exit_code == 0' "$root/.work/twelve-dollar/results/$run_id/summary.json" >/dev/null
