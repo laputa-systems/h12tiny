@@ -30,6 +30,12 @@ already populated by one full test build.
 | `cargo test --workspace --all-features --no-run` (warm) | 0.3 s |
 | `cargo clippy -p h12tiny-web --all-features` (warm) | 0.9 s |
 
+## Dependencies
+
+The h12tiny server is runtime-neutral, so the app supplies `smol` (`laputa-smol`)
+as its executor and timer runtime. `signal-hook` supplies SIGTERM and SIGINT
+for the graceful drain. Both are already present in the root dependency graph.
+
 ## Layout
 
 - `crates/app-core`: SQLite, JWT, JSON, and validation, with no HTTP.
