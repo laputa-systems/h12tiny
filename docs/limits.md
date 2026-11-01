@@ -54,6 +54,12 @@ stale retries, and 10 s DNS/TCP/TLS plus 30 s header deadlines.
 | Graceful drain deadline | none | `crates/h12tiny-server/src/lifecycle.rs` | `drain_timeout`; `production()` uses 30 s. On expiry active futures are dropped and the lifecycle returns `TimedOut` |
 | Server request body limit | none imposed by h12tiny | `crates/h12tiny-server/src/lifecycle.rs` | The service receives `hyper::body::Incoming`; the application owns its body limit |
 
+`Serve::production()` arms the header-read timer as soon as a connection starts
+waiting for the next request, so its 10 s bound also closes an idle keep-alive
+connection. Applications that need longer idle reuse must pass a longer
+`header_read_timeout` through `with_bounds`; there is no separate idle-timeout
+bound.
+
 ## Web (`h12tiny-web`)
 
 | Bound | Default | Source | Configuration |
