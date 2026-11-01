@@ -16,6 +16,12 @@ jaq -e '.k6.p50_ms == 0.31408 and .k6.p95_ms == 0.43134 and .k6.p99_ms == 0.9109
 bash "$root/benchmarks/twelve-dollar/tools/report.sh" "$test_dir" > /dev/null
 rg -q '\| CPU periods throttled \| 6(\.0+)? % \|' "$test_dir/report.md"
 rg -q '\| Peak app file descriptors \| 20 \|' "$test_dir/report.md"
+jaq 'del(.metrics.http_req_duration["p(99)"])' "$test_dir/k6-summary.json" > "$test_dir/incomplete.json"
+mv "$test_dir/incomplete.json" "$test_dir/k6-summary.json"
+bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
+jaq -e '.valid == false' "$test_dir/summary.json" >/dev/null
+jaq '.metrics.http_req_duration["p(99)"] = 0.9109' "$test_dir/k6-summary.json" > "$test_dir/complete.json"
+mv "$test_dir/complete.json" "$test_dir/k6-summary.json"
 printf '%s\n' '{"exit_code":99}' > "$test_dir/k6-run.json"
 bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
 jaq -e '.valid == true and .k6.exit_code == 99' "$test_dir/summary.json" >/dev/null

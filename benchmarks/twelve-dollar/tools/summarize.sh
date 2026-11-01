@@ -247,6 +247,19 @@ fi
 [ -n "$reader_threads" ] || add_reason "app startup line missing reader thread count"
 [ -n "$executor_threads" ] || add_reason "app startup line missing executor thread count"
 [ -n "$k6_count" ] || add_reason "k6 summary export missing http_reqs"
+if ! jaq -e '
+  .metrics as $m |
+  [($m.http_req_duration.med // $m.http_req_duration.values.med),
+   ($m.http_req_duration["p(95)"] // $m.http_req_duration.values["p(95)"]),
+   ($m.http_req_duration["p(99)"] // $m.http_req_duration.values["p(99)"]),
+   ($m.http_req_duration.max // $m.http_req_duration.values.max),
+   ($m.http_req_failed.value // $m.http_req_failed.values.rate),
+   ($m.http_reqs.count // $m.http_reqs.values.count),
+   ($m.http_reqs.rate // $m.http_reqs.values.rate)] |
+  all(.[]; type == "number" and . >= 0)
+' "$RUN_DIR/k6-summary.json" >/dev/null 2>&1; then
+  add_reason "k6 summary has missing or malformed request metrics"
+fi
 
 valid=true
 [ "$(jaq 'length' <<< "$reasons")" = 0 ] || valid=false
