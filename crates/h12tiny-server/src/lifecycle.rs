@@ -13,16 +13,21 @@ use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::future::{self, Either};
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use h12tiny_core::io::FuturesIo;
-use h12tiny_core::runtime::BoxExecutor;
+use h12tiny_core::runtime::{AsyncIoTimer, BoxExecutor};
 use hyper::body::Body;
+use hyper::rt::Timer as _;
 use hyper::service::Service;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::io;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
+
+const ACCEPT_RETRY_BACKOFF: Duration = Duration::from_millis(10);
 
 /// The error delivered to the optional connection error hook.
 pub type ConnectionError = Box<dyn StdError + Send + Sync>;
@@ -75,6 +80,36 @@ impl Listener for async_net::unix::UnixListener {
     }
 }
 
+/// Conservative listener limits applied by [`Serve::production`].
+#[derive(Clone, Copy, Debug)]
+pub struct ProductionBounds {
+    /// Maximum active handshakes and connection drivers.
+    pub max_connections: NonZeroUsize,
+    /// Maximum time to receive complete HTTP/1 request headers.
+    pub header_read_timeout: Option<Duration>,
+}
+
+impl Default for ProductionBounds {
+    fn default() -> Self {
+        Self {
+            max_connections: NonZeroUsize::new(1024).expect("production limit is nonzero"),
+            header_read_timeout: Some(Duration::from_secs(10)),
+        }
+    }
+}
+
+impl ProductionBounds {
+    fn validate(self) -> io::Result<Self> {
+        if matches!(self.header_read_timeout, Some(timeout) if timeout.is_zero()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "header read timeout must be greater than zero",
+            ));
+        }
+        Ok(self)
+    }
+}
+
 /// Configured accept loop returned by [`serve`].
 pub struct Serve<L, S> {
     listener: L,
@@ -83,6 +118,7 @@ pub struct Serve<L, S> {
     executor: BoxExecutor,
     max_connections: Option<usize>,
     on_connection_error: Option<Arc<dyn Fn(ConnectionError) + Send + Sync>>,
+    on_connection_rejected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Configured TLS accept loop returned by [`serve_tls`].
@@ -99,6 +135,7 @@ pub struct TlsServe<L, S> {
     executor: BoxExecutor,
     max_connections: Option<usize>,
     on_connection_error: Option<Arc<dyn Fn(ConnectionError) + Send + Sync>>,
+    on_connection_rejected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Creates a compact async-net-compatible HTTP accept loop.
@@ -130,6 +167,7 @@ where
         executor,
         max_connections: None,
         on_connection_error: None,
+        on_connection_rejected: None,
     }
 }
 
@@ -161,6 +199,7 @@ where
         executor,
         max_connections: None,
         on_connection_error: None,
+        on_connection_rejected: None,
     }
 }
 
@@ -186,6 +225,33 @@ impl<L, S> Serve<L, S> {
         self.on_connection_error = Some(Arc::new(hook));
         self
     }
+
+    /// Installs a hook for at-capacity rejection of an accepted stream.
+    pub fn on_connection_rejected<H>(mut self, hook: H) -> Self
+    where
+        H: Fn() + Send + Sync + 'static,
+    {
+        self.on_connection_rejected = Some(Arc::new(hook));
+        self
+    }
+
+    /// Applies the Internet-facing listener preset.
+    ///
+    /// Caps active connections at 1024 and closes a client that takes longer
+    /// than 10 s to send complete HTTP/1 headers.
+    pub fn production(self) -> Self {
+        self.with_bounds(ProductionBounds::default())
+            .expect("production bounds are valid")
+    }
+
+    /// Applies explicit bounds, including the timer needed by the header
+    /// timeout.
+    pub fn with_bounds(mut self, bounds: ProductionBounds) -> io::Result<Self> {
+        let bounds = bounds.validate()?;
+        self.max_connections = Some(bounds.max_connections.get());
+        self.builder = configure_builder(self.builder, bounds);
+        Ok(self)
+    }
 }
 
 #[cfg(feature = "tls")]
@@ -209,6 +275,50 @@ impl<L, S> TlsServe<L, S> {
         self.on_connection_error = Some(Arc::new(hook));
         self
     }
+
+    /// Installs a hook for at-capacity rejection of an accepted stream.
+    pub fn on_connection_rejected<H>(mut self, hook: H) -> Self
+    where
+        H: Fn() + Send + Sync + 'static,
+    {
+        self.on_connection_rejected = Some(Arc::new(hook));
+        self
+    }
+
+    /// Applies the Internet-facing listener preset.
+    ///
+    /// Caps active handshakes and connections at 1024 and closes a client that
+    /// takes longer than 10 s to send complete HTTP/1 headers.
+    pub fn production(self) -> Self {
+        self.with_bounds(ProductionBounds::default())
+            .expect("production bounds are valid")
+    }
+
+    /// Applies explicit bounds, including the timer needed by the header
+    /// timeout.
+    pub fn with_bounds(mut self, bounds: ProductionBounds) -> io::Result<Self> {
+        let bounds = bounds.validate()?;
+        self.max_connections = Some(bounds.max_connections.get());
+        self.builder = configure_builder(self.builder, bounds);
+        Ok(self)
+    }
+}
+
+fn configure_builder(
+    mut builder: crate::conn::auto::Builder<BoxExecutor>,
+    bounds: ProductionBounds,
+) -> crate::conn::auto::Builder<BoxExecutor> {
+    #[cfg(feature = "http1")]
+    {
+        builder.http1().timer(AsyncIoTimer);
+        builder.http1().header_read_timeout(bounds.header_read_timeout);
+    }
+    #[cfg(feature = "http2")]
+    {
+        builder.http2().timer(AsyncIoTimer);
+    }
+    let _ = bounds;
+    builder
 }
 
 impl<L, S, B> Serve<L, S>
@@ -337,6 +447,17 @@ async fn drain_active(active: &mut ActiveSet) {
     while active.completed.next().await.is_some() {}
 }
 
+fn is_transient_accept_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::TimedOut
+    )
+}
+
 async fn run<L, S, B, F>(server: Serve<L, S>, shutdown: F) -> io::Result<()>
 where
     L: Listener + Send + Sync + 'static,
@@ -390,6 +511,11 @@ where
                 let (stream, _address) = match result {
                     Ok(accepted) => accepted,
                     Err(error) => {
+                        if is_transient_accept_error(&error) {
+                            AsyncIoTimer.sleep(ACCEPT_RETRY_BACKOFF).await;
+                            accept = Some(server.listener.accept());
+                            continue;
+                        }
                         drain_active(&mut active).await;
                         return Err(error);
                     }
@@ -397,7 +523,11 @@ where
                 let at_capacity = server
                     .max_connections
                     .is_some_and(|limit| active.len() >= limit);
-                if !at_capacity {
+                if at_capacity {
+                    if let Some(hook) = &server.on_connection_rejected {
+                        hook();
+                    }
+                } else {
                     let (shutdown_tx, shutdown_rx) = oneshot::channel();
                     let (done_tx, done_rx) = oneshot::channel();
                     let builder = server.builder.clone();
@@ -487,6 +617,11 @@ where
                 let (stream, _address) = match result {
                     Ok(accepted) => accepted,
                     Err(error) => {
+                        if is_transient_accept_error(&error) {
+                            AsyncIoTimer.sleep(ACCEPT_RETRY_BACKOFF).await;
+                            accept = Some(server.listener.accept());
+                            continue;
+                        }
                         drain_active(&mut active).await;
                         return Err(error);
                     }
@@ -494,7 +629,11 @@ where
                 let at_capacity = server
                     .max_connections
                     .is_some_and(|limit| active.len() >= limit);
-                if !at_capacity {
+                if at_capacity {
+                    if let Some(hook) = &server.on_connection_rejected {
+                        hook();
+                    }
+                } else {
                     let (shutdown_tx, shutdown_rx) = oneshot::channel();
                     let (done_tx, done_rx) = oneshot::channel();
                     let acceptor = server.acceptor.clone();
@@ -559,7 +698,9 @@ where
 
 #[cfg(all(test, feature = "http1"))]
 mod tests {
-    use super::{ActiveSet, drain_active, serve};
+    use super::{
+        ActiveSet, ProductionBounds, drain_active, is_transient_accept_error, serve,
+    };
     use bytes::Bytes;
     use futures_channel::oneshot;
     use futures_lite::prelude::*;
@@ -570,8 +711,10 @@ mod tests {
     use hyper::service::Service;
     use std::future::Future;
     use std::io;
+    use std::num::NonZeroUsize;
     use std::pin::Pin;
     use std::task::{Context, Poll};
+    use std::time::Duration;
 
     #[derive(Debug)]
     struct EmptyBody;
@@ -616,6 +759,39 @@ mod tests {
         fn execute(&self, future: BoxSendFuture) {
             std::thread::spawn(move || futures_lite::future::block_on(future));
         }
+    }
+
+    #[test]
+    fn transient_accept_errors_are_classified() {
+        for kind in [
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::WouldBlock,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::TimedOut,
+        ] {
+            assert!(is_transient_accept_error(&io::Error::from(kind)));
+        }
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::InvalidInput] {
+            assert!(!is_transient_accept_error(&io::Error::from(kind)));
+        }
+    }
+
+    #[test]
+    fn production_bounds_are_conservative_and_reject_zero_header_timeout() {
+        let bounds = ProductionBounds::default();
+        assert_eq!(bounds.max_connections.get(), 1024);
+        assert_eq!(bounds.header_read_timeout, Some(Duration::from_secs(10)));
+        assert!(bounds.validate().is_ok());
+
+        let invalid = ProductionBounds {
+            max_connections: NonZeroUsize::new(1).expect("nonzero"),
+            header_read_timeout: Some(Duration::ZERO),
+        };
+        assert_eq!(
+            invalid.validate().expect_err("zero timeout must fail").kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]

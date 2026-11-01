@@ -34,6 +34,13 @@ asks established drivers to drain,
 and resolves after those drivers finish. Connection limits and an optional
 connection-error hook are available on the lifecycle builders.
 
+`Serve::production` and `TlsServe::production` apply the Internet-facing
+preset: 1024 active connections and a 10 s HTTP/1 header-read timeout. The
+preset also installs the Hyper timer needed by that timeout. Add
+`on_connection_rejected` to observe streams closed at capacity. Transient
+listener accept errors are retried with a short backoff; fatal accept errors
+stop the loop.
+
 Draining established streams has no deadline. Applications that need bounded
 shutdown must impose their own deadline for active response streams.
 

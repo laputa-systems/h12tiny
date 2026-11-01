@@ -47,7 +47,10 @@ stale retries, and 10 s DNS/TCP/TLS plus 30 s header deadlines.
 
 | Bound | Default | Source | Configuration |
 | --- | --- | --- | --- |
-| Active connection drivers | unlimited (no limit) | `crates/h12tiny-server/src/lifecycle.rs` | `Serve::max_connections` and `TlsServe::max_connections`; zero rejects every accepted stream |
+| Active connection drivers | unlimited (no limit) | `crates/h12tiny-server/src/lifecycle.rs` | `Serve::max_connections` and `TlsServe::max_connections`; zero rejects every accepted stream. `production()` uses 1024 |
+| HTTP/1 header-read timeout | none unless a timer and timeout are set | `crates/h12tiny-server/src/lifecycle.rs`, `crates/h12tiny-server/src/conn/auto.rs` | `Serve::production()` installs a timer and 10 s timeout; `with_bounds` takes explicit values |
+| At-capacity rejection | drop the accepted stream | `crates/h12tiny-server/src/lifecycle.rs` | `on_connection_rejected` observes the drop |
+| Transient accept retry | retry with 10 ms backoff | `crates/h12tiny-server/src/lifecycle.rs` | Internal; fatal errors stop the loop |
 | Graceful drain deadline | none | `crates/h12tiny-server/src/lifecycle.rs` | Drains until active connections finish; h12tiny applies no timer |
 | Server request body limit | none imposed by h12tiny | `crates/h12tiny-server/src/lifecycle.rs` | The service receives `hyper::body::Incoming`; the application owns its body limit |
 

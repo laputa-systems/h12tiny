@@ -23,6 +23,7 @@ use std::sync::{Arc, atomic::AtomicUsize};
 #[cfg(feature = "http2")]
 use std::sync::atomic::Ordering;
 use std::task::{ready, Context, Poll};
+use std::time::Duration;
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -785,6 +786,15 @@ impl<E> Http1Builder<'_, E> {
     /// Sets the maximum HTTP/1 connection buffer size.
     pub fn max_buf_size(&mut self, max: usize) -> &mut Self {
         self.inner.http1.max_buf_size(max);
+        self
+    }
+
+    /// Sets how long a client may take to send complete HTTP/1 request headers.
+    ///
+    /// Requires a Hyper timer; [`crate::lifecycle::Serve::production`] installs
+    /// one. `None` disables the timeout.
+    pub fn header_read_timeout(&mut self, timeout: impl Into<Option<Duration>>) -> &mut Self {
+        self.inner.http1.header_read_timeout(timeout);
         self
     }
 

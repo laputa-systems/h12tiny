@@ -23,6 +23,6 @@ pub mod lifecycle;
 /// build that config with `rustls_graviola::default_provider()`.
 #[cfg(feature = "tls")]
 pub use futures_rustls::TlsAcceptor;
-pub use lifecycle::{serve, ConnectionError, Listener};
+pub use lifecycle::{serve, ConnectionError, Listener, ProductionBounds};
 #[cfg(feature = "tls")]
 pub use lifecycle::{serve_tls, TlsServe};
