@@ -109,6 +109,10 @@ function j(v) { return v == "" ? "null" : v }
     elapsed_first = $col["elapsed_s"]
     db_first = $col["db_bytes"]
     wal_first = $col["wal_bytes"]
+    if (col["cpu_nr_periods"] && col["cpu_nr_throttled"]) {
+      periods_first = $col["cpu_nr_periods"]
+      throttled_first = $col["cpu_nr_throttled"]
+    }
   }
   elapsed_last = $col["elapsed_s"]
   if ($col["app_cpu_ticks"] != "") {
@@ -125,6 +129,11 @@ function j(v) { return v == "" ? "null" : v }
   if (hwm > peak_hwm) peak_hwm = hwm
   established = $col["established"] + 0
   if (established > peak_established) peak_established = established
+  if (col["app_fds"] && $col["app_fds"] != "" && (peak_fds == "" || $col["app_fds"] + 0 > peak_fds)) peak_fds = $col["app_fds"] + 0
+  if (col["cpu_nr_periods"] && col["cpu_nr_throttled"]) {
+    periods_last = $col["cpu_nr_periods"]
+    throttled_last = $col["cpu_nr_throttled"]
+  }
   db_last = $col["db_bytes"]
   wal_last = $col["wal_bytes"]
   if ($col["memory_peak_bytes"] != "") cgroup_peak = $col["memory_peak_bytes"]
@@ -132,8 +141,8 @@ function j(v) { return v == "" ? "null" : v }
   if ($col["pids_current"] != "") pids_current = $col["pids_current"]
 }
 END {
-  printf "{\"samples\":%d,\"clk_tck\":%s,\"app_pid\":\"%s\",\"elapsed_first_s\":%s,\"elapsed_last_s\":%s,\"app_cpu_ticks_first\":%s,\"app_cpu_ticks_last\":%s,\"nginx_cpu_ticks_first\":%s,\"nginx_cpu_ticks_last\":%s,\"peak_rss_kib\":%s,\"peak_hwm_kib\":%s,\"peak_established\":%s,\"db_bytes_first\":%s,\"db_bytes_last\":%s,\"wal_bytes_first\":%s,\"wal_bytes_last\":%s,\"cgroup_peak_bytes\":%s,\"cgroup_current_last_bytes\":%s,\"pids_current_last\":%s}\n", \
-    n, j(clk), app_pid, j(elapsed_first), j(elapsed_last), j(app_first), j(app_last), j(nginx_first), j(nginx_last), j(peak_rss), j(peak_hwm), j(peak_established), j(db_first), j(db_last), j(wal_first), j(wal_last), j(cgroup_peak), j(cgroup_current), j(pids_current)
+  printf "{\"samples\":%d,\"clk_tck\":%s,\"app_pid\":\"%s\",\"elapsed_first_s\":%s,\"elapsed_last_s\":%s,\"app_cpu_ticks_first\":%s,\"app_cpu_ticks_last\":%s,\"nginx_cpu_ticks_first\":%s,\"nginx_cpu_ticks_last\":%s,\"peak_rss_kib\":%s,\"peak_hwm_kib\":%s,\"peak_established\":%s,\"peak_fds\":%s,\"periods_first\":%s,\"periods_last\":%s,\"throttled_first\":%s,\"throttled_last\":%s,\"db_bytes_first\":%s,\"db_bytes_last\":%s,\"wal_bytes_first\":%s,\"wal_bytes_last\":%s,\"cgroup_peak_bytes\":%s,\"cgroup_current_last_bytes\":%s,\"pids_current_last\":%s}\n", \
+    n, j(clk), app_pid, j(elapsed_first), j(elapsed_last), j(app_first), j(app_last), j(nginx_first), j(nginx_last), j(peak_rss), j(peak_hwm), j(peak_established), j(peak_fds), j(periods_first), j(periods_last), j(throttled_first), j(throttled_last), j(db_first), j(db_last), j(wal_first), j(wal_last), j(cgroup_peak), j(cgroup_current), j(pids_current)
 }' "$RUN_DIR/metrics.csv")"
 
 samples="$(jaq -r '.samples' <<< "$metrics")"
@@ -148,6 +157,8 @@ nginx_ticks_last="$(jaq -r '.nginx_cpu_ticks_last // ""' <<< "$metrics")"
 peak_rss_kib="$(jaq -r '.peak_rss_kib // 0' <<< "$metrics")"
 peak_hwm_kib="$(jaq -r '.peak_hwm_kib // 0' <<< "$metrics")"
 peak_established="$(jaq -r '.peak_established // 0' <<< "$metrics")"
+peak_fds="$(jaq -r '.peak_fds // "null"' <<< "$metrics")"
+throttled_percent="$(jaq -r 'if .periods_first != null and .periods_last != null and .throttled_first != null and .throttled_last != null and .periods_last > .periods_first and .throttled_last >= .throttled_first then 100 * (.throttled_last - .throttled_first) / (.periods_last - .periods_first) else null end' <<< "$metrics")"
 db_bytes_first="$(jaq -r '.db_bytes_first // 0' <<< "$metrics")"
 db_bytes_last="$(jaq -r '.db_bytes_last // 0' <<< "$metrics")"
 wal_bytes_first="$(jaq -r '.wal_bytes_first // 0' <<< "$metrics")"
@@ -271,6 +282,8 @@ jaq -n \
   --argjson peak_hwm_mib "$peak_hwm_mib" \
   --argjson cgroup_peak_mib "$cgroup_peak_mib" \
   --argjson peak_established "$peak_established" \
+  --argjson peak_fds "$peak_fds" \
+  --argjson throttled_percent "$throttled_percent" \
   --argjson db_growth_mib "$db_growth_mib" \
   --argjson wal_growth_mib "$wal_growth_mib" \
   --argjson status_app "$status_app" \
@@ -319,7 +332,8 @@ jaq -n \
       nginx_cpu_seconds_per_request: $nginx_cpu_seconds_per_request,
       combined_cpu_seconds_per_request: $combined_cpu_seconds_per_request,
       utilization_percent: $utilization_percent,
-      window_seconds: $window_seconds
+      window_seconds: $window_seconds,
+      throttled_period_percent: $throttled_percent
     },
     memory: {
       peak_rss_mib: $peak_rss_mib,
@@ -327,7 +341,8 @@ jaq -n \
       cgroup_peak_mib: $cgroup_peak_mib
     },
     connections: {
-      peak_established: $peak_established
+      peak_established: $peak_established,
+      peak_fds: $peak_fds
     },
     db: {
       db_growth_mib: $db_growth_mib,
