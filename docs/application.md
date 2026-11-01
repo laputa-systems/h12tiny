@@ -21,7 +21,7 @@ Router body limits and timeouts set with `Router::body_limit` and
 methods present in each method router; later additions and the fallback keep
 their own settings. `Router::production` instead applies defaults to existing
 routes, later routes, nested and merged routes, and the fallback: 1 MiB and
-30 s, preserved over any explicit `MethodRouter` setting or
+30 s, without overriding any explicit `MethodRouter` setting or
 `without_timeout()`. Built-in byte and JSON extractors return 413
 when a body limit is exceeded. Raw request handlers receive a body error they
 can downcast to `BodyLimitExceeded`; other body errors retain their original

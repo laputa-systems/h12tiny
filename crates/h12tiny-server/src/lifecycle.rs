@@ -361,7 +361,8 @@ where
 {
     /// Stops accepting when `shutdown` resolves, cancels incomplete HTTP/2
     /// setup, then gracefully drains active connection drivers before this
-    /// future completes.
+    /// future completes. If `drain_timeout` expires first, remaining
+    /// connection futures are dropped and this returns `io::ErrorKind::TimedOut`.
     pub fn shutdown_on<F>(self, shutdown: F) -> impl Future<Output = io::Result<()>> + Send
     where
         F: Future + Send + 'static,
@@ -386,7 +387,8 @@ where
 {
     /// Stops accepting, cancels TLS handshakes and incomplete HTTP/2 setup,
     /// then gracefully drains every established connection before this
-    /// future completes.
+    /// future completes. If `drain_timeout` expires first, remaining
+    /// connection futures are dropped and this returns `io::ErrorKind::TimedOut`.
     pub fn shutdown_on<F>(self, shutdown: F) -> impl Future<Output = io::Result<()>> + Send
     where
         F: Future + Send + 'static,
