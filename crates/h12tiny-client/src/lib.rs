@@ -583,6 +583,9 @@ pub enum DebugEvent {
         origin: String,
         kind: ErrorKind,
     },
+    DriverFailed {
+        origin: String,
+    },
 }
 
 /// An opt-in, dependency-free sink for client connection lifecycle events.
@@ -640,8 +643,49 @@ pub struct Client<B> {
 #[derive(Clone, Copy)]
 struct ClientConfig {
     retry_canceled_requests: bool,
+    max_stale_retries: usize,
+    request_options: RequestOptions,
     set_host: bool,
     protocol: PoolProtocol,
+}
+
+#[derive(Clone, Copy)]
+struct RetryBudget {
+    max_retries: usize,
+}
+
+impl RetryBudget {
+    fn permits(self, retries: usize, method: &Method, body_empty: bool, reused: bool) -> bool {
+        reused
+            && body_empty
+            && retries < self.max_retries
+            && is_idempotent(method)
+    }
+}
+
+fn is_idempotent(method: &Method) -> bool {
+    method.is_safe() || *method == Method::PUT || *method == Method::DELETE
+}
+
+const STALE_RETRY_BACKOFF: Duration = Duration::from_millis(10);
+const MAX_POOL_CHECKOUT_RETRIES: usize = 16;
+
+fn report_driver_result<D, E>(
+    executor: BoxExecutor,
+    events: Option<DebugEventLog>,
+    origin: String,
+    driver: D,
+) where
+    D: Future<Output = Result<(), E>> + Send + 'static,
+    E: Send + 'static,
+{
+    executor.execute(async move {
+        if driver.await.is_err() {
+            if let Some(events) = events {
+                events.record(DebugEvent::DriverFailed { origin });
+            }
+        }
+    });
 }
 
 /// A future returned by [`Client::request`]. Dropping it is supported
@@ -698,13 +742,14 @@ where
         self.request(request)
     }
 
-    /// Starts a request without request-scoped phase deadlines.
+    /// Starts a request with the client's default request options.
     ///
-    /// This retains any legacy connector-wide establishment timeout configured
-    /// through [`ConnectorBuilder::connect_timeout`]. New callers that need
-    /// distinct phase deadlines should use [`Self::request_with_options`].
+    /// The default is no deadlines unless [`Builder::production`] or
+    /// [`Builder::default_request_options`] configured them. This also retains
+    /// any legacy connector-wide establishment timeout configured through
+    /// [`ConnectorBuilder::connect_timeout`].
     pub fn request(&self, request: Request<B>) -> ResponseFuture {
-        self.request_with_options(request, RequestOptions::new())
+        self.request_with_options(request, self.config.request_options)
     }
 
     /// Starts a request with deadlines that belong only to this request.
@@ -755,6 +800,10 @@ where
         key: PoolKey,
         options: RequestOptions,
     ) -> Result<Response<Incoming>, Error> {
+        let budget = RetryBudget {
+            max_retries: self.config.max_stale_retries,
+        };
+        let mut retries = 0;
         loop {
             match self.try_send_request(request, key.clone(), options).await {
                 Ok(response) => return Ok(response),
@@ -773,7 +822,15 @@ where
                     reused,
                     absolute_uri,
                 }) => {
-                    if !self.config.retry_canceled_requests || !reused {
+                    let body_empty = returned_request.body().size_hint().exact() == Some(0);
+                    let retry = self.config.retry_canceled_requests
+                        && budget.permits(
+                            retries,
+                            returned_request.method(),
+                            body_empty,
+                            reused,
+                        );
+                    if !retry {
                         if let Some(events) = &self.debug_events {
                             events.record(DebugEvent::ConnectionFailed {
                                 origin: normalize::pool_key_origin(&key),
@@ -787,6 +844,8 @@ where
                             origin: normalize::pool_key_origin(&key),
                         });
                     }
+                    retries += 1;
+                    self.connector.sleep(STALE_RETRY_BACKOFF).await;
                     request = *returned_request;
                     if let Some(absolute_uri) = absolute_uri {
                         *request.uri_mut() = absolute_uri;
@@ -874,11 +933,18 @@ where
         key: PoolKey,
         options: RequestOptions,
     ) -> Result<pool::Pooled<PoolClient<B>, PoolKey>, Error> {
+        let mut retries = 0;
         loop {
             match self.one_connection_for(key.clone(), options).await {
                 Ok(pooled) => return Ok(pooled),
                 Err(ConnectionError::Final(error)) => return Err(error),
-                Err(ConnectionError::Retry) if self.config.retry_canceled_requests => continue,
+                Err(ConnectionError::Retry) if self.config.retry_canceled_requests => {
+                    retries += 1;
+                    if retries > MAX_POOL_CHECKOUT_RETRIES {
+                        return Err(Error::new(ErrorKind::Canceled));
+                    }
+                    self.connector.sleep(STALE_RETRY_BACKOFF).await;
+                }
                 Err(ConnectionError::Retry) => return Err(Error::new(ErrorKind::Canceled)),
             }
         }
@@ -983,7 +1049,10 @@ where
                 protocol,
             });
             if key.scheme() == &http::uri::Scheme::HTTPS {
-                events.record(DebugEvent::AlpnSelected { origin, protocol });
+                events.record(DebugEvent::AlpnSelected {
+                    origin: origin.clone(),
+                    protocol,
+                });
             }
         }
 
@@ -999,7 +1068,9 @@ where
         }
 
         let handshake_started = Instant::now();
-        let mut connection = self.handshake(connected, connection_info).await?;
+        let mut connection = self
+            .handshake(connected, connection_info, origin)
+            .await?;
         connection.connection_info.handshake_duration = Some(handshake_started.elapsed());
         Ok(self.pool.pooled(connecting, connection))
     }
@@ -1008,6 +1079,7 @@ where
         &self,
         connected: Connected,
         connection_info: ConnectionInfo,
+        origin: String,
     ) -> Result<PoolClient<B>, Error> {
         match connected.protocol {
             ConnectionProtocol::Http1 => {
@@ -1018,9 +1090,12 @@ where
                         .handshake(connected.io)
                         .await
                         .map_err(|error| Error::with_source(ErrorKind::Handshake, error))?;
-                    self.executor.execute(async move {
-                        let _ = driver.await;
-                    });
+                    report_driver_result(
+                        self.executor.clone(),
+                        self.debug_events.clone(),
+                        origin,
+                        driver,
+                    );
                     sender
                         .ready()
                         .await
@@ -1032,7 +1107,7 @@ where
                 }
                 #[cfg(not(feature = "http1"))]
                 {
-                    let _ = connected;
+                    let _ = (connected, origin);
                     Err(Error::new(ErrorKind::ProtocolUnavailable))
                 }
             }
@@ -1044,9 +1119,12 @@ where
                         .handshake(connected.io)
                         .await
                         .map_err(|error| Error::with_source(ErrorKind::Handshake, error))?;
-                    self.executor.execute(async move {
-                        let _ = driver.await;
-                    });
+                    report_driver_result(
+                        self.executor.clone(),
+                        self.debug_events.clone(),
+                        origin,
+                        driver,
+                    );
                     sender
                         .ready()
                         .await
@@ -1058,7 +1136,7 @@ where
                 }
                 #[cfg(not(feature = "http2"))]
                 {
-                    let _ = connected;
+                    let _ = (connected, origin);
                     Err(Error::new(ErrorKind::ProtocolUnavailable))
                 }
             }
@@ -1234,6 +1312,8 @@ impl Builder {
         Self {
             config: ClientConfig {
                 retry_canceled_requests: true,
+                max_stale_retries: 2,
+                request_options: RequestOptions::new(),
                 set_host: true,
                 protocol: default_protocol(),
             },
@@ -1341,8 +1421,51 @@ impl Builder {
         self
     }
 
+    /// Applies a conservative preset for an Internet-facing client.
+    ///
+    /// Sets 32 open and 16 idle HTTP/1.1 connections per origin, two stale
+    /// retries, and 10 s DNS/TCP/TLS and 30 s response-header deadlines. The
+    /// 90 s pool idle timeout is unchanged. Later calls override individual
+    /// values, and [`Self::request_with_options`] still controls one request
+    /// explicitly.
+    pub fn production(&mut self) -> &mut Self {
+        self.pool_max_connections_per_host(Some(
+            NonZeroUsize::new(32).expect("production connection limit is nonzero"),
+        ));
+        self.pool_max_idle_per_host(Some(
+            NonZeroUsize::new(16).expect("production idle limit is nonzero"),
+        ));
+        self.max_stale_retries(2);
+        self.config.request_options = RequestOptions {
+            dns_timeout: Some(Duration::from_secs(10)),
+            connect_timeout: Some(Duration::from_secs(10)),
+            tls_timeout: Some(Duration::from_secs(10)),
+            headers_timeout: Some(Duration::from_secs(30)),
+        };
+        self
+    }
+
+    /// Sets deadlines used by [`Client::request`] unless overridden per call.
+    ///
+    /// [`Client::request_with_options`] never merges these values.
+    pub fn default_request_options(&mut self, options: RequestOptions) -> &mut Self {
+        self.config.request_options = options;
+        self
+    }
+
     pub fn retry_canceled_requests(&mut self, enabled: bool) -> &mut Self {
         self.config.retry_canceled_requests = enabled;
+        self
+    }
+
+    /// Bounds retries after a reused pooled connection fails before sending.
+    ///
+    /// Only safe or idempotent methods with an exactly empty body are retried;
+    /// a non-empty or streaming body is never replayed. The default is two
+    /// retries; zero disables them. [`Self::retry_canceled_requests`] remains
+    /// the master switch.
+    pub fn max_stale_retries(&mut self, retries: usize) -> &mut Self {
+        self.config.max_stale_retries = retries;
         self
     }
 
@@ -1413,6 +1536,29 @@ mod tests {
         fn execute(&self, _: BoxSendFuture) {}
     }
 
+    struct InlineExecutor;
+
+    impl hyper::rt::Executor<BoxSendFuture> for InlineExecutor {
+        fn execute(&self, future: BoxSendFuture) {
+            futures_lite::future::block_on(future);
+        }
+    }
+
+    #[test]
+    fn driver_errors_are_reported() {
+        let events = DebugEventLog::default();
+        report_driver_result(
+            BoxExecutor::new(InlineExecutor),
+            Some(events.clone()),
+            "http://example.test".to_owned(),
+            async { Err::<(), _>(()) },
+        );
+        assert!(matches!(
+            events.drain().as_slice(),
+            [DebugEvent::DriverFailed { origin }] if origin == "http://example.test"
+        ));
+    }
+
     #[test]
     fn pool_limits_distinguish_unlimited_from_zero() {
         let mut builder = Builder::new(NoopExecutor);
@@ -1437,6 +1583,32 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn production_sets_bounded_client_defaults() {
+        let mut builder = Builder::new(NoopExecutor);
+        builder.production();
+        assert_eq!(builder.pool_config.max_h1_connections_per_host, 32);
+        assert_eq!(builder.pool_config.max_idle_per_host, 16);
+        assert_eq!(builder.config.max_stale_retries, 2);
+        assert_eq!(
+            builder.config.request_options.dns_timeout(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            builder.config.request_options.connect_timeout(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            builder.config.request_options.tls_timeout(),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            builder.config.request_options.headers_timeout(),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(builder.pool_config.idle_timeout, Some(Duration::from_secs(90)));
     }
 
     #[test]
@@ -1465,6 +1637,28 @@ mod tests {
             Ok(_) => panic!("invalid HTTP/2 settings were accepted"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn stale_retry_requires_an_empty_idempotent_body_and_a_reused_connection() {
+        let budget = RetryBudget { max_retries: 2 };
+        for method in [Method::GET, Method::HEAD, Method::OPTIONS, Method::TRACE, Method::PUT, Method::DELETE] {
+            assert!(budget.permits(0, &method, true, true), "{method} should retry");
+        }
+        for method in [Method::POST, Method::PATCH, Method::CONNECT] {
+            assert!(!budget.permits(0, &method, true, true), "{method} must not retry");
+        }
+        assert!(!budget.permits(0, &Method::GET, false, true), "a body must not replay");
+        assert!(!budget.permits(0, &Method::GET, true, false), "a new connection is not a stale retry");
+    }
+
+    #[test]
+    fn stale_retry_stops_at_the_budget() {
+        let budget = RetryBudget { max_retries: 2 };
+        assert!(budget.permits(0, &Method::GET, true, true));
+        assert!(budget.permits(1, &Method::GET, true, true));
+        assert!(!budget.permits(2, &Method::GET, true, true));
+        assert!(!RetryBudget { max_retries: 0 }.permits(0, &Method::GET, true, true));
     }
 
     #[cfg(feature = "http2")]

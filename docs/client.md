@@ -37,6 +37,17 @@ dropped or fails, waiters are released so a later attempt can proceed.
 limit or `None` for unlimited; zero is not an unlimited sentinel. Call
 `disable_pool` when connections must not be reused.
 
+A failed reused connection retries at most twice by default. Only safe or
+idempotent methods with an exactly empty body are retried; a non-empty or
+streaming body is never replayed. Call `max_stale_retries(0)` to disable
+retries. Terminal failures and driver failures are reported through
+`DebugEvent` when a log is configured.
+
+`Builder::production` applies the Internet-facing preset: 32 open and 16 idle
+connections per origin, two stale retries, 10 s DNS/TCP/TLS deadlines, and
+30 s response-header deadline. The 90 s pool idle timeout is unchanged. Later
+builder calls override individual values.
+
 Request deadlines have separate scopes: DNS, TCP establishment, TLS/ALPN, and
 dispatch through response headers. They are request-scoped and do not include
 streaming response-body time. Pool idle eviction is a separate client setting.

@@ -10,6 +10,7 @@ this page is not a second source for their values.
 | Bound | Default | Source | Configuration |
 | --- | --- | --- | --- |
 | Pool idle timeout | 90 s | `crates/h12tiny-client/src/lib.rs` | `Builder::pool_idle_timeout`; `None` disables idle eviction, zero is rejected |
+| Stale-connection retries | 2 retries, 10 ms backoff | `crates/h12tiny-client/src/lib.rs` | `Builder::max_stale_retries`; only safe/idempotent methods with an empty body over a reused connection |
 | Idle-pool sweep interval | matches the idle timeout, with a 90 ms minimum | `crates/h12tiny-client/src/pool.rs` | Internal; with the 90 s default, eviction runs every 90 s |
 | Happy-eyeballs delay | 250 ms | `crates/h12tiny-client/src/connect.rs` | `ConnectorBuilder::happy_eyeballs_timeout`; `None` disables staggered dialing |
 | Connector connect timeout | none | `crates/h12tiny-client/src/connect.rs` | `ConnectorBuilder::connect_timeout`; zero is rejected |
@@ -19,6 +20,9 @@ this page is not a second source for their values.
 | HTTP/2 stream and connection windows | Hyper defaults | `crates/h12tiny-client/src/lib.rs` | `Http2Settings`; values above 2^31 - 1 are rejected |
 | HTTP/2 maximum frame size | Hyper default | `crates/h12tiny-client/src/lib.rs` | `Http2Settings::max_frame_size`; permitted range is 16384..=16777215 |
 | HTTP/2 keep-alive | disabled | `crates/h12tiny-client/src/lib.rs` | `Http2Settings`; interval and timeout must be nonzero, and timeout or idle policy requires an interval |
+
+`Builder::production` sets 32 open and 16 idle connections per origin, two
+stale retries, and 10 s DNS/TCP/TLS plus 30 s header deadlines.
 
 ## Blocking client (`h12tiny-client-sync`)
 
