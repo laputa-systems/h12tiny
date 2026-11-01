@@ -1200,20 +1200,22 @@ impl<S> Router<S> {
         }
 
         let path = request.uri().path();
-        let method = request.method().clone();
+        let method = request.method();
         let matched = self.routes.matcher.at(path).ok();
         let future: HandlerFuture = match matched {
             Some(matched) => {
-                let params = RouteParams(
-                    matched
-                        .params
-                        .iter()
-                        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-                        .collect(),
-                );
                 let entry = &self.routes.routes[*matched.value];
-                match entry.1.methods.methods.get(&method) {
-                    Some(endpoint) => endpoint.call(request, self.state.clone(), params),
+                match entry.1.methods.methods.get(method) {
+                    Some(endpoint) => {
+                        let params = RouteParams(
+                            matched
+                                .params
+                                .iter()
+                                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                                .collect(),
+                        );
+                        endpoint.call(request, self.state.clone(), params)
+                    }
                     None => {
                         let allow = entry.1.methods.allow_header_value();
                         Box::pin(async move {
