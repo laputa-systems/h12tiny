@@ -2,6 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/tools/perf-gate.sh"
 ROOT="$(cd "$HERE/../.." && pwd)"
 COMMON="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
 MAIN_ROOT="$(cd "$COMMON/.." && pwd)"
@@ -430,7 +431,7 @@ cmd_smoke() {
     die "app did not become healthy"
   fi
 
-  if ! perf-gate-ready; then
+  if ! quiet_perf_gate; then
     smoke_discard=true
     echo "perf gate deferred: host busy" >&2
     exit 75
@@ -497,7 +498,7 @@ cmd_smoke() {
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   gate_after=false
-  if perf-gate-ready -1; then
+  if quiet_perf_gate -1; then
     gate_after=true
   fi
 

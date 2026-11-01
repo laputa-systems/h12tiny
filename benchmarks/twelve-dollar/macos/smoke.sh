@@ -10,6 +10,7 @@ hold="$6"
 readers="$7"
 image="$8"
 network="$9"
+source "$bench/tools/perf-gate.sh"
 
 [ "$(uname -s)" = Darwin ] || { echo 'macOS profile requires macOS' >&2; exit 1; }
 [ ! -e "$result" ] || { echo "result already exists: $result" >&2; exit 1; }
@@ -44,7 +45,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [ -n "$app_pid" ] && curl -fsS http://127.0.0.1:3000/health >/dev/null || { echo 'server did not become healthy' >&2; exit 1; }
-if ! perf-gate-ready; then echo 'perf gate deferred: host busy' >&2; exit 75; fi
+if ! quiet_perf_gate; then echo 'perf gate deferred: host busy' >&2; exit 75; fi
 : > "$result/k6-stats.log"
 (
   while [ ! -e "$result/stats.done" ]; do
@@ -64,7 +65,7 @@ docker run --rm --name h12t-twelve-k6 --network "$network" --cpus=8 --memory=10g
 k6_rc=$?
 set -e
 gate_after=false
-if perf-gate-ready -1; then gate_after=true; fi
+if quiet_perf_gate -1; then gate_after=true; fi
 touch "$result/stats.done"
 wait "$stats_pid" || true
 stats_pid=""

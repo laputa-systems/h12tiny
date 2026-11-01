@@ -2,6 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/perf-gate.sh"
 BENCH="$(cd "$HERE/.." && pwd)"
 
 BOX=h12t-twelve-box
@@ -312,7 +313,7 @@ defer_and_stop() {
 wait_for_gate() {
   local attempt
   for attempt in $(seq 1 "$GATE_ATTEMPTS"); do
-    if perf-gate-ready; then
+    if quiet_perf_gate; then
       return 0
     fi
     if [ "$attempt" -lt "$GATE_ATTEMPTS" ]; then
@@ -432,7 +433,7 @@ run_probe() {
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   local gate_after=false
-  if perf-gate-ready -1; then
+  if quiet_perf_gate -1; then
     gate_after=true
   fi
 
