@@ -4,8 +4,10 @@ root="$(cd "$(dirname "$0")/../../.." && pwd)"
 mkdir -p "$root/.work/tmp"
 test_dir="$(mktemp -d "$root/.work/tmp/ceiling.XXXXXXXX")"
 runner=""
+ceiling_pid=""
 cleanup() {
   if [ -n "$runner" ]; then kill -KILL "$runner" 2>/dev/null || true; wait "$runner" 2>/dev/null || true; fi
+  if [ -n "$ceiling_pid" ]; then kill -KILL "$ceiling_pid" 2>/dev/null || true; fi
   if [ -f "$test_dir/k6.pid" ]; then kill -KILL "$(cat "$test_dir/k6.pid")" 2>/dev/null || true; fi
   rm -rf "$test_dir"
 }
@@ -102,3 +104,42 @@ kill -TERM "$runner"
 wait "$runner" 2>/dev/null || true
 runner=""
 if kill -0 "$sleep_pid" 2>/dev/null; then echo 'gate retry survived cancellation' >&2; exit 1; fi
+repo="$test_dir/repo"
+bench="$repo/benchmarks/twelve-dollar"
+challenge="$repo/.work/twelve-dollar/challenge"
+mkdir -p "$bench/tools" "$bench/box" "$challenge/bench" "$challenge/seed" "$challenge/test"
+cp "$root/benchmarks/twelve-dollar/run.sh" "$root/benchmarks/twelve-dollar/start-static.sh" "$bench/"
+cp "$root/benchmarks/twelve-dollar/tools/"{ceiling,perf-gate,k6-summary}.sh "$bench/tools/"
+cp "$root/benchmarks/twelve-dollar/box/"{app,nginx-check}.sh "$bench/box/"
+printf '%s\n' 'export default function() {}' > "$challenge/bench/load.js"
+printf '%s\n' '[]' > "$challenge/seed/tokens.json"
+: > "$challenge/bench/nginx.conf"
+: > "$challenge/seed/feed.db"
+: > "$challenge/test/test.sh"
+git -c init.templateDir="$test_dir/templates" -C "$repo" init -q
+git -C "$repo" add benchmarks
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm fixture
+git -c init.templateDir="$test_dir/templates" -C "$challenge" init -q
+git -C "$challenge" add bench seed test
+git -C "$challenge" -c user.name=test -c user.email=test@example.invalid commit -qm fixture
+printf '#!/bin/sh\nexec /bin/bash "$@"\n' > "$test_dir/bin/bash"
+chmod +x "$test_dir/bin/bash"
+PATH="$test_dir/bin:$PATH" TWELVE_TEST_DIR="$test_dir" TWELVE_TEST_HANG=true /bin/bash "$bench/run.sh" box ceiling > "$test_dir/entry.log" 2>&1 &
+runner=$!
+for _ in $(seq 1 100); do
+  [ -s "$test_dir/k6.pid" ] && break
+  kill -0 "$runner" 2>/dev/null || { cat "$test_dir/entry.log" >&2; exit 1; }
+  sleep 0.1
+done
+[ -s "$test_dir/k6.pid" ] || { cat "$test_dir/entry.log" >&2; exit 1; }
+ceiling_pid="$(pgrep -P "$runner" | head -1)"
+kill -TERM "$runner"
+for _ in $(seq 1 50); do
+  if ! kill -0 "$runner" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if kill -0 "$runner" 2>/dev/null; then echo 'entry point did not stop after SIGTERM' >&2; exit 1; fi
+wait "$runner" 2>/dev/null || true
+runner=""
+if kill -0 "$(cat "$test_dir/k6.pid")" 2>/dev/null; then echo 'entry point left the ceiling generator running' >&2; exit 1; fi
+ceiling_pid=""

@@ -593,6 +593,17 @@ cmd_ceiling() {
   [ ! -e "$result_dir" ] || die "result directory already exists: $result_dir"
   mkdir -p "$STATE/results"
 
+  ceiling_pid=""
+  ceiling_stop() {
+    if [ -n "$ceiling_pid" ]; then
+      kill -TERM "$ceiling_pid" 2>/dev/null || true
+      wait "$ceiling_pid" 2>/dev/null || true
+    fi
+  }
+  trap ceiling_stop EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
   bash "$HERE/tools/ceiling.sh" \
     --out "$result_dir" \
     --challenge "$CHALLENGE" \
@@ -602,7 +613,12 @@ cmd_ceiling() {
     --k6-image "$K6_IMAGE" \
     --bench "$HERE" \
     --ramp-up 60 \
-    --duration 60
+    --duration 60 &
+  ceiling_pid=$!
+  ceiling_rc=0
+  if wait "$ceiling_pid"; then :; else ceiling_rc=$?; fi
+  ceiling_pid=""
+  [ "$ceiling_rc" -eq 0 ] || exit "$ceiling_rc"
 
   cp "$result_dir/ceiling.json" "$STATE/ceiling.json"
   echo "== results $result_dir"
