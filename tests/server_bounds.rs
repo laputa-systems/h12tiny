@@ -22,6 +22,7 @@ fn bounds(header_read_timeout: Duration, max_connections: usize) -> ProductionBo
     ProductionBounds {
         max_connections: NonZeroUsize::new(max_connections).unwrap(),
         header_read_timeout: Some(header_read_timeout),
+        drain_timeout: None,
     }
 }
 
@@ -131,5 +132,49 @@ fn production_capacity_hook_reports_rejection() {
         drop(second);
         shutdown_tx.send(()).unwrap();
         server.await;
+    });
+}
+
+#[test]
+fn production_drain_timeout_aborts_a_stalled_handler() {
+    smol::block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = smol::spawn(async move {
+            let started = Arc::new(std::sync::Mutex::new(Some(started_tx)));
+            let service = service_fn(move |_| {
+                let started = started.lock().unwrap().take();
+                async move {
+                    if let Some(started) = started {
+                        let _ = started.send(());
+                    }
+                    std::future::pending::<Result<Response<FullBody>, Infallible>>().await
+                }
+            });
+            serve(listener, service, BoxExecutor::new(SmolExecutor))
+                .with_bounds(bounds(Duration::from_secs(5), 8))
+                .unwrap()
+                .drain_timeout(Some(Duration::from_millis(50)))
+                .shutdown_on(shutdown_rx)
+                .await
+        });
+
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        client.flush().await.unwrap();
+        started_rx.await.unwrap();
+
+        shutdown_tx.send(()).unwrap();
+        let error = server
+            .await
+            .expect_err("a stalled handler must exceed the drain deadline");
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+
+        drop(client);
     });
 }

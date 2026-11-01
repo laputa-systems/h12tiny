@@ -87,6 +87,8 @@ pub struct ProductionBounds {
     pub max_connections: NonZeroUsize,
     /// Maximum time to receive complete HTTP/1 request headers.
     pub header_read_timeout: Option<Duration>,
+    /// Maximum time to wait for active connections after shutdown.
+    pub drain_timeout: Option<Duration>,
 }
 
 impl Default for ProductionBounds {
@@ -94,6 +96,7 @@ impl Default for ProductionBounds {
         Self {
             max_connections: NonZeroUsize::new(1024).expect("production limit is nonzero"),
             header_read_timeout: Some(Duration::from_secs(10)),
+            drain_timeout: Some(Duration::from_secs(30)),
         }
     }
 }
@@ -117,6 +120,7 @@ pub struct Serve<L, S> {
     service: S,
     executor: BoxExecutor,
     max_connections: Option<usize>,
+    drain_timeout: Option<Duration>,
     on_connection_error: Option<Arc<dyn Fn(ConnectionError) + Send + Sync>>,
     on_connection_rejected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -134,6 +138,7 @@ pub struct TlsServe<L, S> {
     service: S,
     executor: BoxExecutor,
     max_connections: Option<usize>,
+    drain_timeout: Option<Duration>,
     on_connection_error: Option<Arc<dyn Fn(ConnectionError) + Send + Sync>>,
     on_connection_rejected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -166,6 +171,7 @@ where
         service,
         executor,
         max_connections: None,
+        drain_timeout: None,
         on_connection_error: None,
         on_connection_rejected: None,
     }
@@ -198,6 +204,7 @@ where
         service,
         executor,
         max_connections: None,
+        drain_timeout: None,
         on_connection_error: None,
         on_connection_rejected: None,
     }
@@ -244,11 +251,20 @@ impl<L, S> Serve<L, S> {
             .expect("production bounds are valid")
     }
 
+    /// Bounds how long shutdown waits for active connections.
+    ///
+    /// `None` waits indefinitely; a zero duration aborts immediately.
+    pub fn drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.drain_timeout = timeout.into();
+        self
+    }
+
     /// Applies explicit bounds, including the timer needed by the header
     /// timeout.
     pub fn with_bounds(mut self, bounds: ProductionBounds) -> io::Result<Self> {
         let bounds = bounds.validate()?;
         self.max_connections = Some(bounds.max_connections.get());
+        self.drain_timeout = bounds.drain_timeout;
         self.builder = configure_builder(self.builder, bounds);
         Ok(self)
     }
@@ -294,11 +310,20 @@ impl<L, S> TlsServe<L, S> {
             .expect("production bounds are valid")
     }
 
+    /// Bounds how long shutdown waits for active connections.
+    ///
+    /// `None` waits indefinitely; a zero duration aborts immediately.
+    pub fn drain_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.drain_timeout = timeout.into();
+        self
+    }
+
     /// Applies explicit bounds, including the timer needed by the header
     /// timeout.
     pub fn with_bounds(mut self, bounds: ProductionBounds) -> io::Result<Self> {
         let bounds = bounds.validate()?;
         self.max_connections = Some(bounds.max_connections.get());
+        self.drain_timeout = bounds.drain_timeout;
         self.builder = configure_builder(self.builder, bounds);
         Ok(self)
     }
@@ -391,6 +416,7 @@ struct ActiveSet {
     // completed connection can be removed in O(1) rather than scanning all
     // receivers on every accept-loop wake.
     shutdowns: HashMap<u64, oneshot::Sender<()>>,
+    aborts: HashMap<u64, oneshot::Sender<()>>,
     completed: FuturesUnordered<Completed>,
     next_id: u64,
 }
@@ -399,6 +425,7 @@ impl ActiveSet {
     fn new() -> Self {
         Self {
             shutdowns: HashMap::new(),
+            aborts: HashMap::new(),
             completed: FuturesUnordered::new(),
             next_id: 0,
         }
@@ -408,14 +435,21 @@ impl ActiveSet {
         self.completed.len()
     }
 
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.completed.is_empty()
     }
 
-    fn insert(&mut self, shutdown: oneshot::Sender<()>, done: oneshot::Receiver<()>) {
+    fn insert(
+        &mut self,
+        shutdown: oneshot::Sender<()>,
+        abort: oneshot::Sender<()>,
+        done: oneshot::Receiver<()>,
+    ) {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).expect("connection id overflow");
         self.shutdowns.insert(id, shutdown);
+        self.aborts.insert(id, abort);
         self.completed.push(Completed { id, done });
     }
 
@@ -423,6 +457,7 @@ impl ActiveSet {
         match self.completed.poll_next_unpin(cx) {
             Poll::Ready(Some(id)) => {
                 self.shutdowns.remove(&id);
+                self.aborts.remove(&id);
                 Poll::Ready(())
             }
             Poll::Ready(None) | Poll::Pending => Poll::Pending,
@@ -434,6 +469,12 @@ impl ActiveSet {
             let _ = sender.send(());
         }
     }
+
+    fn force_shutdown(&mut self) {
+        for (_, sender) in self.aborts.drain() {
+            let _ = sender.send(());
+        }
+    }
 }
 
 enum Event<S, A> {
@@ -442,9 +483,28 @@ enum Event<S, A> {
     Done,
 }
 
-async fn drain_active(active: &mut ActiveSet) {
+async fn drain_active(active: &mut ActiveSet, timeout: Option<Duration>) -> bool {
     active.shutdown();
-    while active.completed.next().await.is_some() {}
+    match timeout {
+        None => {
+            while active.completed.next().await.is_some() {}
+            true
+        }
+        Some(timeout) => {
+            let drained = async {
+                while active.completed.next().await.is_some() {}
+            };
+            match future::select(Box::pin(drained), AsyncIoTimer.sleep(timeout)).await {
+                Either::Left(((), _timer)) => true,
+                Either::Right((_elapsed, drained)) => {
+                    drop(drained);
+                    active.force_shutdown();
+                    while active.completed.next().await.is_some() {}
+                    false
+                }
+            }
+        }
+    }
 }
 
 fn is_transient_accept_error(error: &io::Error) -> bool {
@@ -475,11 +535,10 @@ where
     let mut shutdown = Box::pin(shutdown);
     let mut accept = Some(server.listener.accept());
     let mut active = ActiveSet::new();
-    let mut accepting = true;
 
-    while accepting || !active.is_empty() {
+    loop {
         let event = future::poll_fn(|cx| {
-            if accepting && shutdown.as_mut().poll(cx).is_ready() {
+            if shutdown.as_mut().poll(cx).is_ready() {
                 return Poll::Ready(Event::Shutdown);
             }
 
@@ -487,14 +546,12 @@ where
                 return Poll::Ready(Event::Done);
             }
 
-            if accepting {
-                if let Some(accept_future) = accept.as_mut() {
-                    match accept_future.as_mut().poll(cx) {
-                        Poll::Ready(result) => {
-                            return Poll::Ready(Event::Accepted(result));
-                        }
-                        Poll::Pending => {}
+            if let Some(accept_future) = accept.as_mut() {
+                match accept_future.as_mut().poll(cx) {
+                    Poll::Ready(result) => {
+                        return Poll::Ready(Event::Accepted(result));
                     }
+                    Poll::Pending => {}
                 }
             }
 
@@ -504,8 +561,15 @@ where
 
         match event {
             Event::Shutdown => {
-                accepting = false;
-                active.shutdown();
+                let drained = drain_active(&mut active, server.drain_timeout).await;
+                return if drained {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "graceful drain deadline expired",
+                    ))
+                };
             }
             Event::Accepted(result) => {
                 let (stream, _address) = match result {
@@ -516,7 +580,7 @@ where
                             accept = Some(server.listener.accept());
                             continue;
                         }
-                        drain_active(&mut active).await;
+                        let _ = drain_active(&mut active, server.drain_timeout).await;
                         return Err(error);
                     }
                 };
@@ -529,6 +593,7 @@ where
                     }
                 } else {
                     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+                    let (abort_tx, abort_rx) = oneshot::channel();
                     let (done_tx, done_rx) = oneshot::channel();
                     let builder = server.builder.clone();
                     let service = server.service.clone();
@@ -540,11 +605,18 @@ where
                                 .into_owned(),
                         );
                         let shutdown = Box::pin(shutdown_rx);
+                        let abort = Box::pin(abort_rx);
                         let result = match future::select(connection, shutdown).await {
                             Either::Left((result, _shutdown)) => result,
                             Either::Right((_shutdown, mut connection)) => {
                                 connection.as_mut().graceful_shutdown();
-                                connection.await
+                                match future::select(connection, abort).await {
+                                    Either::Left((result, _abort)) => result,
+                                    Either::Right((_abort, _connection)) => {
+                                        let _ = done_tx.send(());
+                                        return;
+                                    }
+                                }
                             }
                         };
                         if let Err(error) = result {
@@ -554,15 +626,13 @@ where
                         }
                         let _ = done_tx.send(());
                     });
-                    active.insert(shutdown_tx, done_rx);
+                    active.insert(shutdown_tx, abort_tx, done_rx);
                 }
                 accept = Some(server.listener.accept());
             }
             Event::Done => {}
         }
     }
-
-    Ok(())
 }
 
 #[cfg(feature = "tls")]
@@ -583,11 +653,10 @@ where
     let mut shutdown = Box::pin(shutdown);
     let mut accept = Some(server.listener.accept());
     let mut active = ActiveSet::new();
-    let mut accepting = true;
 
-    while accepting || !active.is_empty() {
+    loop {
         let event = future::poll_fn(|cx| {
-            if accepting && shutdown.as_mut().poll(cx).is_ready() {
+            if shutdown.as_mut().poll(cx).is_ready() {
                 return Poll::Ready(Event::Shutdown);
             }
 
@@ -595,12 +664,10 @@ where
                 return Poll::Ready(Event::Done);
             }
 
-            if accepting {
-                if let Some(accept_future) = accept.as_mut() {
-                    match accept_future.as_mut().poll(cx) {
-                        Poll::Ready(result) => return Poll::Ready(Event::Accepted(result)),
-                        Poll::Pending => {}
-                    }
+            if let Some(accept_future) = accept.as_mut() {
+                match accept_future.as_mut().poll(cx) {
+                    Poll::Ready(result) => return Poll::Ready(Event::Accepted(result)),
+                    Poll::Pending => {}
                 }
             }
 
@@ -610,8 +677,15 @@ where
 
         match event {
             Event::Shutdown => {
-                accepting = false;
-                active.shutdown();
+                let drained = drain_active(&mut active, server.drain_timeout).await;
+                return if drained {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "graceful drain deadline expired",
+                    ))
+                };
             }
             Event::Accepted(result) => {
                 let (stream, _address) = match result {
@@ -622,7 +696,7 @@ where
                             accept = Some(server.listener.accept());
                             continue;
                         }
-                        drain_active(&mut active).await;
+                        let _ = drain_active(&mut active, server.drain_timeout).await;
                         return Err(error);
                     }
                 };
@@ -635,6 +709,7 @@ where
                     }
                 } else {
                     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+                    let (abort_tx, abort_rx) = oneshot::channel();
                     let (done_tx, done_rx) = oneshot::channel();
                     let acceptor = server.acceptor.clone();
                     let builder = server.builder.clone();
@@ -671,11 +746,18 @@ where
                                 return;
                             }
                         };
+                        let abort = Box::pin(abort_rx);
                         let result = match future::select(connection, shutdown).await {
                             Either::Left((result, _shutdown)) => result,
                             Either::Right((_shutdown, mut connection)) => {
                                 connection.as_mut().graceful_shutdown();
-                                connection.await
+                                match future::select(connection, abort).await {
+                                    Either::Left((result, _abort)) => result,
+                                    Either::Right((_abort, _connection)) => {
+                                        let _ = done_tx.send(());
+                                        return;
+                                    }
+                                }
                             }
                         };
                         if let Err(error) = result {
@@ -685,15 +767,13 @@ where
                         }
                         let _ = done_tx.send(());
                     });
-                    active.insert(shutdown_tx, done_rx);
+                    active.insert(shutdown_tx, abort_tx, done_rx);
                 }
                 accept = Some(server.listener.accept());
             }
             Event::Done => {}
         }
     }
-
-    Ok(())
 }
 
 #[cfg(all(test, feature = "http1"))]
@@ -787,6 +867,7 @@ mod tests {
         let invalid = ProductionBounds {
             max_connections: NonZeroUsize::new(1).expect("nonzero"),
             header_read_timeout: Some(Duration::ZERO),
+            drain_timeout: None,
         };
         assert_eq!(
             invalid.validate().expect_err("zero timeout must fail").kind(),
@@ -800,8 +881,9 @@ mod tests {
         let mut senders = Vec::new();
         for _ in 0..128 {
             let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+            let (abort_tx, _abort_rx) = oneshot::channel();
             let (done_tx, done_rx) = oneshot::channel();
-            active.insert(shutdown_tx, done_rx);
+            active.insert(shutdown_tx, abort_tx, done_rx);
             senders.push(done_tx);
         }
         assert_eq!(active.len(), 128);
@@ -824,17 +906,38 @@ mod tests {
         let mut workers = Vec::new();
         for _ in 0..8 {
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
+            let (abort_tx, _abort_rx) = oneshot::channel();
             let (done_tx, done_rx) = oneshot::channel();
-            active.insert(shutdown_tx, done_rx);
+            active.insert(shutdown_tx, abort_tx, done_rx);
             workers.push(std::thread::spawn(move || {
                 futures_lite::future::block_on(shutdown_rx).expect("shutdown signaled");
                 done_tx.send(()).expect("completion receiver still live");
             }));
         }
-        futures_lite::future::block_on(drain_active(&mut active));
+        assert!(futures_lite::future::block_on(drain_active(&mut active, None)));
         for worker in workers {
             worker.join().expect("connection task completed");
         }
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn drain_timeout_forces_the_remaining_connections() {
+        let mut active = ActiveSet::new();
+        let (shutdown_tx, _shutdown_rx) = oneshot::channel();
+        let (abort_tx, abort_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        active.insert(shutdown_tx, abort_tx, done_rx);
+        let worker = std::thread::spawn(move || {
+            futures_lite::future::block_on(abort_rx).expect("abort signaled");
+            done_tx.send(()).expect("completion receiver still live");
+        });
+
+        assert!(!futures_lite::future::block_on(drain_active(
+            &mut active,
+            Some(Duration::from_millis(10))
+        )));
+        worker.join().expect("connection task completed");
         assert!(active.is_empty());
     }
 
