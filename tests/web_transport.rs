@@ -9,7 +9,7 @@
 mod support;
 
 use async_net::TcpListener;
-use h12tiny::client::Client;
+use h12tiny::client::{Client, Protocol};
 use h12tiny::io::FuturesIo;
 use h12tiny::runtime::BoxExecutor;
 use h12tiny::server::conn::auto;
@@ -83,7 +83,7 @@ async fn request_web(h2: bool) {
     let (address, server) = serve_once(h2).await;
     let mut builder = Client::builder(SmolExecutor);
     if h2 {
-        builder.http2_only(true);
+        builder.protocol(Protocol::Http2Only);
     }
     let client = builder.build::<BoxBody>();
     let response = client

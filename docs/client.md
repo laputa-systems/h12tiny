@@ -16,7 +16,14 @@ targets and uses the `http` URI types without a URL stack.
 
 Cleartext defaults to HTTP/1.1 when H1 is compiled, and to prior-knowledge H2
 in an H2-only build. A dual-protocol client can explicitly select plaintext
-H2 with `http2_only(true)`.
+H2 with `Protocol::Http2Only`.
+
+`Protocol` is one policy, not a stack of independent flags. Selecting
+`Http1Only` restricts TLS ALPN to HTTP/1.1, including a caller-built TLS
+configuration. `Http2Only` requires h2 from ALPN but leaves the configured
+offerings in place, so a peer that selects anything else fails cleanly as an
+ALPN error. Selecting `Auto` later removes the HTTP/1.1 restriction. A custom
+`Dialer` owns its own transport negotiation and may ignore the ALPN portion.
 
 Pool identity uses the parsed scheme and authority; an explicit default port
 and an omitted port remain distinct keys. HTTP/2 connections are not
@@ -26,10 +33,16 @@ cancellation, and driver state. H2 connections are shared, and concurrent
 requests for a new H2 origin share one establishment attempt. If its owner is
 dropped or fails, waiters are released so a later attempt can proceed.
 
+`pool_max_connections_per_host` and `pool_max_idle_per_host` take a nonzero
+limit or `None` for unlimited; zero is not an unlimited sentinel. Call
+`disable_pool` when connections must not be reused.
+
 Request deadlines have separate scopes: DNS, TCP establishment, TLS/ALPN, and
 dispatch through response headers. They are request-scoped and do not include
 streaming response-body time. Pool idle eviction is a separate client setting.
-Do not replace these scopes with a whole-request deadline that expires active
+Every configured timeout must be greater than zero: a zero duration expires
+before any work can start and is rejected by the builder that accepts it. Do
+not replace these scopes with a whole-request deadline that expires active
 body streams.
 
 Dropping a request future closes an affected H1 session or resets the affected

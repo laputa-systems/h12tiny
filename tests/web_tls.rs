@@ -14,7 +14,7 @@ use std::sync::Arc;
 use async_net::TcpListener;
 use futures_channel::oneshot;
 use futures_rustls::TlsAcceptor;
-use h12tiny::client::{Client, Connector};
+use h12tiny::client::{Client, Connector, Protocol};
 use h12tiny::runtime::BoxExecutor;
 use h12tiny::server::serve_tls;
 use h12tiny::util::{self, BoxBody, ResponseBodyExt};
@@ -54,7 +54,7 @@ async fn request_web_tls(http2: bool) {
     let mut builder = Client::builder(SmolExecutor);
     builder.connector(Connector::with_tls_config(fixture_client_config()));
     if http2 {
-        builder.http2_only(true);
+        builder.protocol(Protocol::Http2Only);
     }
     let client = builder.build::<BoxBody>();
     let response = client

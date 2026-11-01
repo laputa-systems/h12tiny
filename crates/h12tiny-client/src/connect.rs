@@ -32,6 +32,7 @@ use h12tiny_core::io::FuturesIo;
 use h12tiny_core::runtime::AsyncIoTimer;
 
 use super::RequestOptions;
+use crate::pool::Protocol as PoolProtocol;
 
 /// A raw connection stream accepted by a custom [`Dialer`].
 ///
@@ -589,16 +590,6 @@ impl Connector {
         Self::builder().resolver(resolver).build()
     }
 
-    #[cfg(feature = "tls")]
-    pub(crate) fn force_http1(&mut self) {
-        let mut config = (*self.tls).clone();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        self.tls = Arc::new(config);
-    }
-
-    #[cfg(not(feature = "tls"))]
-    pub(crate) fn force_http1(&mut self) {}
-
     /// Uses an explicit Rustls client policy. This is the intended hook for
     /// test root stores and private PKI; certificate validation remains owned
     /// by Rustls.
@@ -629,21 +620,26 @@ impl Connector {
 
     #[cfg(test)]
     pub(crate) async fn connect(&self, uri: Uri, require_h2: bool) -> Result<Connected, Error> {
-        self.connect_with_options(uri, require_h2, RequestOptions::new())
+        let protocol = if require_h2 {
+            PoolProtocol::Http2
+        } else {
+            PoolProtocol::Auto
+        };
+        self.connect_with_options(uri, protocol, RequestOptions::new())
             .await
     }
 
     pub(crate) async fn connect_with_options(
         &self,
         uri: Uri,
-        require_h2: bool,
+        protocol: PoolProtocol,
         options: RequestOptions,
     ) -> Result<Connected, Error> {
         if options.has_connection_timeout() {
-            return self.connect_without_timeout(uri, require_h2, options).await;
+            return self.connect_without_timeout(uri, protocol, options).await;
         }
 
-        let connect = Box::pin(self.connect_without_timeout(uri, require_h2, options));
+        let connect = Box::pin(self.connect_without_timeout(uri, protocol, options));
         match self.connect_timeout {
             None => connect.await,
             Some(timeout) => match future::select(connect, self.timer.sleep(timeout)).await {
@@ -660,9 +656,10 @@ impl Connector {
     async fn connect_without_timeout(
         &self,
         uri: Uri,
-        require_h2: bool,
+        protocol: PoolProtocol,
         options: RequestOptions,
     ) -> Result<Connected, Error> {
+        let require_h2 = protocol == PoolProtocol::Http2;
         if let ConnectorKind::Custom(dialer) = &self.kind {
             let connect = async {
                 dialer
@@ -737,7 +734,7 @@ impl Connector {
                 self.connect_tls(
                     host,
                     uri.port_u16().unwrap_or(443),
-                    require_h2,
+                    protocol,
                     tcp,
                     options,
                 )
@@ -752,10 +749,11 @@ impl Connector {
         &self,
         host: String,
         port: u16,
-        require_h2: bool,
+        protocol: PoolProtocol,
         custom_tcp: Option<TcpConnected>,
         options: RequestOptions,
     ) -> Result<Connected, Error> {
+        let require_h2 = protocol == PoolProtocol::Http2;
         let tcp = match custom_tcp {
             Some(tcp) => tcp,
             None => {
@@ -771,7 +769,7 @@ impl Connector {
         } = tcp;
         let server_name = futures_rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|_| Error::InvalidServerName(host))?;
-        let tls = self.tls.clone();
+        let tls = self.tls_config(protocol);
         let tls_connect = async {
             futures_rustls::TlsConnector::from(tls)
                 .connect(server_name, io)
@@ -790,12 +788,28 @@ impl Connector {
         Ok(Connected::new(FuturesIo::new(tls), protocol).with_addresses(local_addr, peer_addr))
     }
 
+    #[cfg(feature = "tls")]
+    fn tls_config(&self, protocol: PoolProtocol) -> Arc<rustls::ClientConfig> {
+        const HTTP1_ALPN: &[u8] = b"http/1.1";
+        if protocol != PoolProtocol::Http1 {
+            return self.tls.clone();
+        }
+        if self.tls.alpn_protocols.len() == 1
+            && self.tls.alpn_protocols[0].as_slice() == HTTP1_ALPN
+        {
+            return self.tls.clone();
+        }
+        let mut config = (*self.tls).clone();
+        config.alpn_protocols = vec![HTTP1_ALPN.to_vec()];
+        Arc::new(config)
+    }
+
     #[cfg(not(feature = "tls"))]
     async fn connect_tls(
         &self,
         _: String,
         _: u16,
-        _: bool,
+        _: PoolProtocol,
         _: Option<TcpConnected>,
         _: RequestOptions,
     ) -> Result<Connected, Error> {
@@ -1002,9 +1016,17 @@ impl ConnectorBuilder {
     /// process-global executor. Use [`ConnectorBuilder::resolver`] when DNS itself
     /// needs a protocol-specific deadline or cancellation policy.
     /// This does not limit a request, response headers, or a response body.
-    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+    /// A zero duration is rejected because it expires before any connection
+    /// attempt can start.
+    pub fn connect_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        if timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "timeout must be greater than zero",
+            ));
+        }
         self.connector.connect_timeout = Some(timeout);
-        self
+        Ok(self)
     }
 
     /// Replaces the timer used solely for [`ConnectorBuilder::connect_timeout`].
@@ -1063,6 +1085,7 @@ fn default_alpn_protocols() -> Vec<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::net::SocketAddr;
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1075,6 +1098,7 @@ mod tests {
         Connector, DialFuture, Dialer, Error, ResolveFuture, Resolver, TcpConnected, TcpDialFuture,
         TcpDialer,
     };
+    use crate::pool::Protocol as PoolProtocol;
     use crate::RequestOptions;
     use http::Uri;
 
@@ -1223,7 +1247,8 @@ mod tests {
     fn connect_timeout_cancels_a_pending_dialer() {
         let connector = Connector::builder()
             .dialer(PendingDialer)
-            .connect_timeout(Duration::ZERO)
+            .connect_timeout(Duration::from_nanos(1))
+            .unwrap()
             .build();
         let result =
             smol::block_on(connector.connect("http://example.test/".parse().unwrap(), false));
@@ -1234,7 +1259,8 @@ mod tests {
     fn connect_timeout_cancels_a_pending_tcp_dialer() {
         let connector = Connector::builder()
             .tcp_dialer(PendingTcpDialer)
-            .connect_timeout(Duration::ZERO)
+            .connect_timeout(Duration::from_nanos(1))
+            .unwrap()
             .build();
         let result =
             smol::block_on(connector.connect("http://example.test/".parse().unwrap(), false));
@@ -1247,6 +1273,7 @@ mod tests {
         let connector = Connector::builder()
             .tcp_dialer(dialer.clone())
             .connect_timeout(Duration::from_millis(1))
+            .unwrap()
             .build();
         let result =
             smol::block_on(connector.connect("http://example.test/".parse().unwrap(), false));
@@ -1324,7 +1351,8 @@ mod tests {
     fn connect_timeout_cancels_a_pending_resolver() {
         let connector = Connector::builder()
             .resolver(PendingResolver)
-            .connect_timeout(Duration::ZERO)
+            .connect_timeout(Duration::from_nanos(1))
+            .unwrap()
             .build();
         let result =
             smol::block_on(connector.connect("http://example.test/".parse().unwrap(), false));
@@ -1337,8 +1365,10 @@ mod tests {
         let connector = Connector::builder().resolver(PendingResolver).build();
         let result = smol::block_on(connector.connect_with_options(
             "http://example.test/".parse().unwrap(),
-            false,
-            RequestOptions::new().with_dns_timeout(Duration::ZERO),
+            PoolProtocol::Auto,
+            RequestOptions::new()
+                .with_dns_timeout(Duration::from_nanos(1))
+                .unwrap(),
         ));
 
         assert!(matches!(result, Err(Error::DnsTimeout)));
@@ -1349,13 +1379,17 @@ mod tests {
         let dialer = OptionsRecordingTcpDialer::default();
         let options = RequestOptions::new()
             .with_dns_timeout(Duration::from_millis(1))
+            .unwrap()
             .with_connect_timeout(Duration::from_millis(2))
+            .unwrap()
             .with_tls_timeout(Duration::from_millis(3))
-            .with_headers_timeout(Duration::from_millis(4));
+            .unwrap()
+            .with_headers_timeout(Duration::from_millis(4))
+            .unwrap();
         let connector = Connector::builder().tcp_dialer(dialer.clone()).build();
         let result = smol::block_on(connector.connect_with_options(
             "http://example.test/".parse().unwrap(),
-            false,
+            PoolProtocol::Auto,
             options,
         ));
 
@@ -1376,8 +1410,10 @@ mod tests {
         let connector = Connector::builder().tcp_dialer(LocalTcpDialer).build();
         let result = smol::block_on(connector.connect_with_options(
             format!("https://{address}/").parse().unwrap(),
-            false,
-            RequestOptions::new().with_tls_timeout(Duration::ZERO),
+            PoolProtocol::Auto,
+            RequestOptions::new()
+                .with_tls_timeout(Duration::from_nanos(1))
+                .unwrap(),
         ));
 
         assert!(
@@ -1435,11 +1471,45 @@ mod tests {
 
     #[cfg(feature = "tls")]
     #[test]
-    fn forcing_http1_replaces_even_a_custom_h2_alpn_policy() {
-        let config = ClientTlsConfigBuilder::new().build().unwrap();
-        let mut connector = Connector::with_tls_config(config);
-        connector.force_http1();
-        assert_eq!(connector.tls.alpn_protocols, vec![b"http/1.1".to_vec()]);
+    fn http1_alpn_restriction_is_per_connection() {
+        let config = ClientTlsConfigBuilder::new()
+            .alpn_protocols([b"custom".to_vec()])
+            .build()
+            .unwrap();
+        let connector = Connector::with_tls_config(config);
+
+        assert_eq!(
+            connector.tls_config(PoolProtocol::Http1).alpn_protocols,
+            vec![b"http/1.1".to_vec()]
+        );
+        assert_eq!(
+            connector.tls_config(PoolProtocol::Http2).alpn_protocols,
+            vec![b"custom".to_vec()]
+        );
+        assert_eq!(
+            connector.tls_config(PoolProtocol::Auto).alpn_protocols,
+            vec![b"custom".to_vec()]
+        );
+        assert_eq!(connector.tls.alpn_protocols, vec![b"custom".to_vec()]);
+    }
+
+    #[test]
+    fn zero_connection_timeouts_are_rejected() {
+        let error = match Connector::builder().connect_timeout(Duration::ZERO) {
+            Ok(_) => panic!("zero connector timeout was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+        for options in [
+            RequestOptions::new().with_dns_timeout(Duration::ZERO),
+            RequestOptions::new().with_connect_timeout(Duration::ZERO),
+            RequestOptions::new().with_tls_timeout(Duration::ZERO),
+            RequestOptions::new().with_headers_timeout(Duration::ZERO),
+        ] {
+            let error = options.expect_err("zero request timeout was accepted");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[cfg(feature = "tls")]

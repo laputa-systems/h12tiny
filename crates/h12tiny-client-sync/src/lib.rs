@@ -108,7 +108,7 @@ impl Client {
         timeout: Option<Duration>,
     ) -> Result<Response<ResponseBody>, Error> {
         if matches!(timeout, Some(timeout) if timeout.is_zero()) {
-            return Err(Error::new(ErrorKind::Timeout));
+            return Err(Error::new(ErrorKind::InvalidTimeout));
         }
 
         let mut request = Request::from_parts(parts, ());
@@ -232,9 +232,14 @@ impl Builder {
 
     /// Bounds each TCP candidate connection and the TLS handshake after DNS
     /// resolution. `ToSocketAddrs` is synchronous and cannot be preempted.
-    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+    /// A zero duration is rejected because it expires before any connection
+    /// attempt can start.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Result<Self, Error> {
+        if timeout.is_zero() {
+            return Err(Error::new(ErrorKind::InvalidTimeout));
+        }
         self.client.connect_timeout = Some(timeout);
-        self
+        Ok(self)
     }
 
     /// Controls whether a missing `Host` header is synthesized from the
@@ -464,6 +469,7 @@ pub enum ErrorKind {
     SendRequest,
     Response,
     Timeout,
+    InvalidTimeout,
 }
 
 impl Error {
@@ -513,6 +519,7 @@ impl fmt::Display for Error {
             ErrorKind::SendRequest => "HTTP request dispatch failed",
             ErrorKind::Response => "HTTP response framing failed",
             ErrorKind::Timeout => "blocking HTTP operation timed out",
+            ErrorKind::InvalidTimeout => "timeout must be greater than zero",
         })
     }
 }
@@ -555,7 +562,7 @@ impl ResponseBody {
             self.mode,
             BodyMode::Empty
                 | BodyMode::ContentLength(0)
-                | BodyMode::Chunked { complete: true, .. }
+                | BodyMode::Chunked(ChunkedBody::Complete)
                 | BodyMode::EofComplete
         )
     }
@@ -635,17 +642,14 @@ impl ResponseBody {
 
     fn read_chunked(&mut self, output: &mut [u8]) -> io::Result<usize> {
         loop {
-            let (remaining, separator_due, complete) = match self.mode {
-                BodyMode::Chunked {
+            let (remaining, separator_due) = match self.mode {
+                BodyMode::Chunked(ChunkedBody::Reading {
                     remaining,
                     separator_due,
-                    complete,
-                } => (remaining, separator_due, complete),
+                }) => (remaining, separator_due),
+                BodyMode::Chunked(ChunkedBody::Complete) => return Ok(0),
                 _ => unreachable!("chunked reader requires chunked body state"),
             };
-            if complete {
-                return Ok(0);
-            }
             if remaining == 0 {
                 if separator_due {
                     let mut separator = [0_u8; 2];
@@ -661,18 +665,13 @@ impl ResponseBody {
                 let size = parse_chunk_size(&line)?;
                 if size == 0 {
                     self.consume_trailers()?;
-                    self.mode = BodyMode::Chunked {
-                        remaining: 0,
-                        separator_due: false,
-                        complete: true,
-                    };
+                    self.mode = BodyMode::Chunked(ChunkedBody::Complete);
                     return Ok(0);
                 }
-                self.mode = BodyMode::Chunked {
+                self.mode = BodyMode::Chunked(ChunkedBody::Reading {
                     remaining: size,
                     separator_due: false,
-                    complete: false,
-                };
+                });
                 continue;
             }
 
@@ -686,11 +685,11 @@ impl ResponseBody {
                     "HTTP response ended in a chunk",
                 ));
             }
-            self.mode = BodyMode::Chunked {
-                remaining: remaining - u64::try_from(read).expect("usize fits in u64"),
-                separator_due: remaining == u64::try_from(read).expect("usize fits in u64"),
-                complete: false,
-            };
+            let count = u64::try_from(read).expect("usize fits in u64");
+            self.mode = BodyMode::Chunked(ChunkedBody::Reading {
+                remaining: remaining - count,
+                separator_due: remaining == count,
+            });
             return Ok(read);
         }
     }
@@ -730,7 +729,7 @@ impl Read for ResponseBody {
                 );
                 Ok(read)
             }
-            BodyMode::Chunked { .. } => self.read_chunked(output),
+            BodyMode::Chunked(_) => self.read_chunked(output),
         }
     }
 }
@@ -790,13 +789,18 @@ impl Read for Connection {
 enum BodyMode {
     Empty,
     ContentLength(u64),
-    Chunked {
-        remaining: u64,
-        separator_due: bool,
-        complete: bool,
-    },
+    Chunked(ChunkedBody),
     Eof,
     EofComplete,
+}
+
+#[derive(Clone, Copy)]
+enum ChunkedBody {
+    Reading {
+        remaining: u64,
+        separator_due: bool,
+    },
+    Complete,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1196,11 +1200,10 @@ fn response_body_mode(
                 "HTTP response has unsupported or ambiguous transfer framing",
             ));
         }
-        return Ok(BodyMode::Chunked {
+        return Ok(BodyMode::Chunked(ChunkedBody::Reading {
             remaining: 0,
             separator_due: false,
-            complete: false,
-        });
+        }));
     }
 
     let mut content_length = None;
@@ -1488,6 +1491,22 @@ mod tests {
             .expect_err("the reader is shorter than the declared length");
         assert_eq!(error.kind(), ErrorKind::SendRequest);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn zero_timeouts_are_rejected_before_io() {
+        let error = match Client::builder().connect_timeout(Duration::ZERO) {
+            Ok(_) => panic!("zero connect timeout was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::InvalidTimeout);
+
+        let request = Request::get("http://127.0.0.1:1/").body(Vec::new()).unwrap();
+        let error = match Client::new().request_with_timeout(request, Some(Duration::ZERO)) {
+            Ok(_) => panic!("zero request timeout was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), ErrorKind::InvalidTimeout);
     }
 
     #[test]

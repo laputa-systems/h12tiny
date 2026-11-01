@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use futures_util::future::join_all;
-use h12tiny::client::{Client, ConnectionProtocol, DebugEvent, DebugEventLog};
+use h12tiny::client::{Client, ConnectionProtocol, DebugEvent, DebugEventLog, Protocol};
 use h12tiny::runtime::BoxSendFuture;
 use http::Uri;
 use http_body::{Body, Frame};
@@ -241,7 +241,7 @@ fn main() {
     let result = smol::block_on(async move {
         let mut builder = Client::builder(SmolExecutor);
         if options.http2 {
-            builder.http2_only(true);
+            builder.protocol(Protocol::Http2Only);
         }
         let debug_events = options.debug_events.then(DebugEventLog::default);
         if let Some(debug_events) = &debug_events {

@@ -13,7 +13,9 @@ mod pool;
 use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -123,6 +125,9 @@ impl fmt::Display for Error {
 /// similarly owns its DNS/TCP internals. Both receive these options and must
 /// enforce the phases they own, while h12tiny continues to enforce its own
 /// TLS and ALPN phase after a custom TCP dialer returns.
+///
+/// Every deadline must be greater than zero; a zero duration would expire
+/// before any work starts and is rejected instead of silently timing out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RequestOptions {
     dns_timeout: Option<Duration>,
@@ -143,9 +148,10 @@ impl RequestOptions {
     }
 
     /// Limits DNS resolution for the default direct-origin connector.
-    pub fn with_dns_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_dns_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        require_positive_timeout(timeout)?;
         self.dns_timeout = Some(timeout);
-        self
+        Ok(self)
     }
 
     /// Returns the DNS deadline selected for this request.
@@ -157,9 +163,10 @@ impl RequestOptions {
     ///
     /// A custom [`Dialer`] or [`TcpDialer`] receives this value and enforces
     /// its own TCP policy without h12tiny conflating it with DNS time.
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        require_positive_timeout(timeout)?;
         self.connect_timeout = Some(timeout);
-        self
+        Ok(self)
     }
 
     /// Returns the aggregate TCP-establishment deadline selected for this request.
@@ -168,9 +175,10 @@ impl RequestOptions {
     }
 
     /// Limits Rustls negotiation and ALPN after TCP is established.
-    pub fn with_tls_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_tls_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        require_positive_timeout(timeout)?;
         self.tls_timeout = Some(timeout);
-        self
+        Ok(self)
     }
 
     /// Returns the TLS and ALPN deadline selected for this request.
@@ -179,9 +187,10 @@ impl RequestOptions {
     }
 
     /// Limits request dispatch through receipt of response headers.
-    pub fn with_headers_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_headers_timeout(mut self, timeout: Duration) -> io::Result<Self> {
+        require_positive_timeout(timeout)?;
         self.headers_timeout = Some(timeout);
-        self
+        Ok(self)
     }
 
     /// Returns the request-dispatch and response-header deadline selected for this request.
@@ -191,6 +200,47 @@ impl RequestOptions {
 
     fn has_connection_timeout(self) -> bool {
         self.dns_timeout.is_some() || self.connect_timeout.is_some() || self.tls_timeout.is_some()
+    }
+}
+
+fn require_positive_timeout(timeout: Duration) -> io::Result<()> {
+    if timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "timeout must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+/// Transport protocol policy for a client.
+///
+/// One value controls pool routing and, for the built-in connector, TLS ALPN.
+/// Assigning a new value replaces the previous policy completely, so a later
+/// selection never inherits ALPN restrictions from an earlier one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Protocol {
+    /// Negotiates the highest protocol compiled into the client.
+    #[default]
+    Auto,
+    /// Uses HTTP/1.1 and offers only `http/1.1` over TLS.
+    #[cfg(feature = "http1")]
+    Http1Only,
+    /// Requires HTTP/2 over the configured TLS ALPN offerings.
+    #[cfg(feature = "http2")]
+    Http2Only,
+}
+
+impl Protocol {
+    fn pool_protocol(self) -> PoolProtocol {
+        match self {
+            Self::Auto => default_protocol(),
+            #[cfg(feature = "http1")]
+            Self::Http1Only => PoolProtocol::Http1,
+            #[cfg(feature = "http2")]
+            Self::Http2Only => PoolProtocol::Http2,
+        }
     }
 }
 
@@ -296,6 +346,45 @@ impl ResponseInfo {
     }
 }
 
+/// A rejected HTTP/2 client setting.
+///
+/// Settings are validated by [`Builder::http2_settings`] before any
+/// connection uses them, so an out-of-range value cannot reach Hyper's
+/// per-connection assertions or become an inert configuration.
+#[cfg(feature = "http2")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Http2SettingsError {
+    /// A stream window exceeded the HTTP/2 flow-control maximum.
+    StreamWindowTooLarge,
+    /// A connection window exceeded the HTTP/2 flow-control maximum.
+    ConnectionWindowTooLarge,
+    /// The maximum frame size was outside the HTTP/2 permitted range.
+    MaxFrameSizeOutOfRange,
+    /// A keep-alive interval or timeout was zero.
+    ZeroKeepAliveDuration,
+    /// A keep-alive option was configured without a keep-alive interval.
+    KeepAliveWithoutInterval,
+}
+
+#[cfg(feature = "http2")]
+impl fmt::Display for Http2SettingsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::StreamWindowTooLarge => "HTTP/2 stream window exceeds 2^31 - 1",
+            Self::ConnectionWindowTooLarge => "HTTP/2 connection window exceeds 2^31 - 1",
+            Self::MaxFrameSizeOutOfRange => "HTTP/2 max frame size is outside 16384..=16777215",
+            Self::ZeroKeepAliveDuration => "HTTP/2 keep-alive interval and timeout must be nonzero",
+            Self::KeepAliveWithoutInterval => {
+                "HTTP/2 keep-alive timeout or idle policy requires an interval"
+            }
+        })
+    }
+}
+
+#[cfg(feature = "http2")]
+impl StdError for Http2SettingsError {}
+
 /// Stable HTTP/2 client settings independent of Hyper's builder API.
 ///
 /// Every setting is opt-in: [`Http2Settings::new`] leaves Hyper's defaults
@@ -385,10 +474,46 @@ impl Http2Settings {
 
     /// Controls whether keep-alive pings continue with no active streams.
     ///
-    /// This has no effect until [`Self::keep_alive_interval`] is configured.
+    /// This requires [`Self::keep_alive_interval`] to be configured.
     pub const fn keep_alive_while_idle(mut self, enabled: bool) -> Self {
         self.keep_alive_while_idle = Some(enabled);
         self
+    }
+
+    /// Checks every configured value against the HTTP/2 protocol limits.
+    pub fn validate(&self) -> Result<(), Http2SettingsError> {
+        const MAX_WINDOW_SIZE: u32 = (1 << 31) - 1;
+        const MIN_MAX_FRAME_SIZE: u32 = 16_384;
+        const MAX_MAX_FRAME_SIZE: u32 = (1 << 24) - 1;
+
+        if self
+            .initial_stream_window_size
+            .is_some_and(|size| size > MAX_WINDOW_SIZE)
+        {
+            return Err(Http2SettingsError::StreamWindowTooLarge);
+        }
+        if self
+            .initial_connection_window_size
+            .is_some_and(|size| size > MAX_WINDOW_SIZE)
+        {
+            return Err(Http2SettingsError::ConnectionWindowTooLarge);
+        }
+        if self.max_frame_size.is_some_and(|size| {
+            !(MIN_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&size)
+        }) {
+            return Err(Http2SettingsError::MaxFrameSizeOutOfRange);
+        }
+        if self.keep_alive_interval == Some(Duration::ZERO)
+            || self.keep_alive_timeout == Some(Duration::ZERO)
+        {
+            return Err(Http2SettingsError::ZeroKeepAliveDuration);
+        }
+        if self.keep_alive_interval.is_none()
+            && (self.keep_alive_timeout.is_some() || self.keep_alive_while_idle.is_some())
+        {
+            return Err(Http2SettingsError::KeepAliveWithoutInterval);
+        }
+        Ok(())
     }
 
     fn apply(&self, builder: &mut hyper::client::conn::http2::Builder<BoxExecutor>) {
@@ -815,7 +940,7 @@ where
             .connector
             .connect_with_options(
                 normalize::pool_key_uri(key.clone()),
-                self.config.protocol == PoolProtocol::Http2,
+                self.config.protocol,
                 options,
             )
             .await
@@ -1117,19 +1242,41 @@ impl Builder {
 
     pub fn connector(&mut self, connector: Connector) -> &mut Self {
         self.connector = connector;
-        if self.config.protocol == PoolProtocol::Http1 {
-            self.connector.force_http1();
+        self
+    }
+
+    /// Sets how long an idle pooled connection is retained.
+    ///
+    /// `None` retains connections until the peer closes them. A zero duration
+    /// is rejected because it would evict every connection immediately.
+    pub fn pool_idle_timeout(
+        &mut self,
+        timeout: impl Into<Option<Duration>>,
+    ) -> io::Result<&mut Self> {
+        let timeout = timeout.into();
+        if let Some(timeout) = timeout {
+            require_positive_timeout(timeout)?;
         }
+        self.pool_config.idle_timeout = timeout;
+        Ok(self)
+    }
+
+    /// Caps idle HTTP/1.1 connections retained for each origin.
+    ///
+    /// `None` leaves the number unlimited. Use [`Self::disable_pool`] instead
+    /// when connections should not be reused.
+    pub fn pool_max_idle_per_host(
+        &mut self,
+        max_idle: impl Into<Option<NonZeroUsize>>,
+    ) -> &mut Self {
+        let max_idle = max_idle.into();
+        self.pool_config.max_idle_per_host = max_idle.map_or(usize::MAX, NonZeroUsize::get);
         self
     }
 
-    pub fn pool_idle_timeout(&mut self, timeout: impl Into<Option<Duration>>) -> &mut Self {
-        self.pool_config.idle_timeout = timeout.into();
-        self
-    }
-
-    pub fn pool_max_idle_per_host(&mut self, max_idle: usize) -> &mut Self {
-        self.pool_config.max_idle_per_host = max_idle;
+    /// Disables connection reuse and the pool's HTTP/1.1 connection bound.
+    pub fn disable_pool(&mut self) -> &mut Self {
+        self.pool_config.max_idle_per_host = 0;
         self
     }
 
@@ -1138,14 +1285,15 @@ impl Builder {
     /// The bound includes connecting, in-use, and idle HTTP/1.1 sockets, so
     /// callers above the bound wait for a reusable connection instead of
     /// creating another socket. HTTP/2 remains multiplexed and is unaffected.
-    /// Passing zero disables this additional bound; the default is unlimited.
-    /// The bound applies only while the idle pool is enabled.
-    pub fn pool_max_connections_per_host(&mut self, max_connections: usize) -> &mut Self {
-        self.pool_config.max_h1_connections_per_host = if max_connections == 0 {
-            usize::MAX
-        } else {
-            max_connections
-        };
+    /// `None` leaves the number unlimited; the default is unlimited. The
+    /// bound applies only while the idle pool is enabled.
+    pub fn pool_max_connections_per_host(
+        &mut self,
+        max_connections: impl Into<Option<NonZeroUsize>>,
+    ) -> &mut Self {
+        let max_connections = max_connections.into();
+        self.pool_config.max_h1_connections_per_host =
+            max_connections.map_or(usize::MAX, NonZeroUsize::get);
         self
     }
 
@@ -1178,44 +1326,35 @@ impl Builder {
         self
     }
 
-    /// Restricts this client to HTTP/1.1 connections and TLS ALPN.
+    /// Selects the transport protocol and matching TLS ALPN policy.
     ///
-    /// The policy retains the H1 per-origin pool. It also overrides a custom
-    /// TLS configuration's ALPN offerings so an HTTPS peer cannot select H2.
-    #[cfg(feature = "http1")]
-    pub fn http1_only(&mut self) -> &mut Self {
-        self.config.protocol = PoolProtocol::Http1;
-        self.connector.force_http1();
-        self
-    }
-
-    #[cfg(feature = "http2")]
-    pub fn http2_only(&mut self, enabled: bool) -> &mut Self {
-        self.config.protocol = if enabled {
-            PoolProtocol::Http2
-        } else {
-            PoolProtocol::Auto
-        };
+    /// Replacing the policy is always valid: a later selection removes any
+    /// ALPN restriction applied by an earlier one. A custom [`Dialer`] owns
+    /// transport negotiation and may ignore the TLS ALPN portion.
+    pub fn protocol(&mut self, protocol: Protocol) -> &mut Self {
+        self.config.protocol = protocol.pool_protocol();
         self
     }
 
     /// Applies stable HTTP/2 client settings without exposing Hyper's builder
     /// as part of h12tiny's public API.
+    ///
+    /// Invalid or inert settings are rejected before they reach a connection.
     #[cfg(feature = "http2")]
-    pub fn http2_settings(&mut self, settings: Http2Settings) -> &mut Self {
+    pub fn http2_settings(
+        &mut self,
+        settings: Http2Settings,
+    ) -> Result<&mut Self, Http2SettingsError> {
+        settings.validate()?;
         settings.apply(&mut self.h2_builder);
-        self
+        Ok(self)
     }
 
     pub fn build<B>(self) -> Client<B> {
-        let mut connector = self.connector;
-        if self.config.protocol == PoolProtocol::Http1 {
-            connector.force_http1();
-        }
         let debug_events = self.debug_events;
         Client {
             config: self.config,
-            connector,
+            connector: self.connector,
             executor: self.executor.clone(),
             #[cfg(feature = "http1")]
             h1_builder: self.h1_builder,
@@ -1241,5 +1380,140 @@ fn default_protocol() -> PoolProtocol {
     #[cfg(not(all(feature = "http2", not(feature = "http1"))))]
     {
         PoolProtocol::Auto
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NoopExecutor;
+
+    impl hyper::rt::Executor<BoxSendFuture> for NoopExecutor {
+        fn execute(&self, _: BoxSendFuture) {}
+    }
+
+    #[test]
+    fn pool_limits_distinguish_unlimited_from_zero() {
+        let mut builder = Builder::new(NoopExecutor);
+        builder.pool_max_idle_per_host(None);
+        assert_eq!(builder.pool_config.max_idle_per_host, usize::MAX);
+        builder.pool_max_idle_per_host(NonZeroUsize::new(2).unwrap());
+        assert_eq!(builder.pool_config.max_idle_per_host, 2);
+        builder.disable_pool();
+        assert_eq!(builder.pool_config.max_idle_per_host, 0);
+
+        builder.pool_max_connections_per_host(None);
+        assert_eq!(builder.pool_config.max_h1_connections_per_host, usize::MAX);
+        builder.pool_max_connections_per_host(NonZeroUsize::new(1).unwrap());
+        assert_eq!(builder.pool_config.max_h1_connections_per_host, 1);
+    }
+
+    #[test]
+    fn zero_pool_idle_timeout_is_rejected() {
+        let mut builder = Builder::new(NoopExecutor);
+        let error = match builder.pool_idle_timeout(Some(Duration::ZERO)) {
+            Ok(_) => panic!("zero pool idle timeout was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn protocol_selection_replaces_the_previous_policy() {
+        let mut builder = Builder::new(NoopExecutor);
+        builder.protocol(Protocol::Auto);
+        assert_eq!(builder.config.protocol, default_protocol());
+        #[cfg(feature = "http1")]
+        {
+            builder.protocol(Protocol::Http1Only);
+            assert_eq!(builder.config.protocol, PoolProtocol::Http1);
+        }
+        #[cfg(feature = "http2")]
+        {
+            builder.protocol(Protocol::Http2Only);
+            assert_eq!(builder.config.protocol, PoolProtocol::Http2);
+        }
+    }
+
+    #[cfg(feature = "http2")]
+    fn settings_error(
+        builder: &mut Builder,
+        settings: Http2Settings,
+    ) -> Http2SettingsError {
+        match builder.http2_settings(settings) {
+            Ok(_) => panic!("invalid HTTP/2 settings were accepted"),
+            Err(error) => error,
+        }
+    }
+
+    #[cfg(feature = "http2")]
+    #[test]
+    fn http2_settings_reject_invalid_and_inert_values() {
+        let mut builder = Builder::new(NoopExecutor);
+
+        assert_eq!(
+            settings_error(&mut builder, Http2Settings::new().max_frame_size(16_383)),
+            Http2SettingsError::MaxFrameSizeOutOfRange
+        );
+        assert_eq!(
+            settings_error(&mut builder, Http2Settings::new().max_frame_size(16_777_216)),
+            Http2SettingsError::MaxFrameSizeOutOfRange
+        );
+        assert_eq!(
+            settings_error(
+                &mut builder,
+                Http2Settings::new().initial_stream_window_size(1 << 31)
+            ),
+            Http2SettingsError::StreamWindowTooLarge
+        );
+        assert_eq!(
+            settings_error(
+                &mut builder,
+                Http2Settings::new().initial_connection_window_size(1 << 31)
+            ),
+            Http2SettingsError::ConnectionWindowTooLarge
+        );
+        assert_eq!(
+            settings_error(
+                &mut builder,
+                Http2Settings::new().keep_alive_interval(Duration::ZERO)
+            ),
+            Http2SettingsError::ZeroKeepAliveDuration
+        );
+        assert_eq!(
+            settings_error(
+                &mut builder,
+                Http2Settings::new()
+                    .keep_alive_interval(Duration::from_secs(1))
+                    .keep_alive_timeout(Duration::ZERO)
+            ),
+            Http2SettingsError::ZeroKeepAliveDuration
+        );
+        assert_eq!(
+            settings_error(
+                &mut builder,
+                Http2Settings::new().keep_alive_timeout(Duration::from_secs(1))
+            ),
+            Http2SettingsError::KeepAliveWithoutInterval
+        );
+        assert_eq!(
+            settings_error(
+                &mut builder,
+                Http2Settings::new().keep_alive_while_idle(true)
+            ),
+            Http2SettingsError::KeepAliveWithoutInterval
+        );
+
+        builder
+            .http2_settings(
+                Http2Settings::new()
+                    .max_frame_size(16_384)
+                    .initial_stream_window_size((1 << 31) - 1)
+                    .keep_alive_interval(Duration::from_secs(1))
+                    .keep_alive_timeout(Duration::from_secs(1))
+                    .keep_alive_while_idle(true),
+            )
+            .unwrap();
     }
 }

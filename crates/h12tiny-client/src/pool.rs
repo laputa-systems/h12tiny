@@ -53,6 +53,7 @@ impl Key for String {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Protocol {
+    #[cfg_attr(all(feature = "http2", not(feature = "http1")), allow(dead_code))]
     Auto,
     Http1,
     Http2,

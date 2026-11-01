@@ -76,6 +76,7 @@ fn sync_client_uses_http11_alpn_and_reads_a_tls_response() {
         .expect("request should be valid");
     let mut response = Client::builder()
         .connect_timeout(Duration::from_secs(1))
+        .unwrap()
         .tls_config(config)
         .build()
         .request_with_timeout(request, Some(Duration::from_secs(1)))
@@ -148,6 +149,7 @@ fn sync_client_timeout_covers_slow_fragments_inside_one_tls_record() {
         .expect("request should be valid");
     let result = Client::builder()
         .connect_timeout(Duration::from_secs(1))
+        .unwrap()
         .tls_config(config)
         .build()
         .request_with_timeout(request, Some(Duration::from_millis(250)));
@@ -209,6 +211,7 @@ fn sync_client_connect_timeout_bounds_trickled_tls_handshake() {
         .expect("request should be valid");
     let result = Client::builder()
         .connect_timeout(Duration::from_millis(150))
+        .unwrap()
         .tls_config(fixture_client_config())
         .build()
         .request(request);

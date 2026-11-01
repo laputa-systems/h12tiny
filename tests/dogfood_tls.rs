@@ -20,8 +20,8 @@ use bytes::Bytes;
 use futures_rustls::TlsAcceptor;
 use futures_util::future::{self, Either};
 use h12tiny::client::{
-    Client, Connector, DialFuture, Dialer, ErrorKind, ResponseInfo, TcpConnected, TcpDialFuture,
-    TcpDialer,
+    Client, Connector, DialFuture, Dialer, ErrorKind, Protocol, ResponseInfo, TcpConnected,
+    TcpDialFuture, TcpDialer,
 };
 use h12tiny::runtime::BoxExecutor;
 use h12tiny::server::conn::auto;
@@ -224,7 +224,7 @@ fn h1_only_tls_policy_selects_http11_when_fixture_offers_h2() {
             .tls_config(fixture_client_config())
             .build();
         let mut builder = Client::builder(SmolExecutor);
-        builder.connector(connector).http1_only();
+        builder.connector(connector).protocol(Protocol::Http1Only);
         let client = builder.build::<FullBody>();
         for body in [b"one".as_slice(), b"two".as_slice()] {
             let response = client
@@ -269,7 +269,7 @@ fn h2_only_tls_policy_rejects_http11_after_a_custom_tcp_dial() {
             .tls_config(fixture_client_config())
             .build();
         let mut builder = Client::builder(SmolExecutor);
-        builder.connector(connector).http2_only(true);
+        builder.connector(connector).protocol(Protocol::Http2Only);
         let client = builder.build::<FullBody>();
         let error = client
             .request(
@@ -321,7 +321,7 @@ fn concurrent_first_tls_h2_requests_share_one_handshake_and_session() {
             .tls_config(fixture_client_config())
             .build();
         let mut builder = Client::builder(SmolExecutor);
-        builder.connector(connector).http2_only(true);
+        builder.connector(connector).protocol(Protocol::Http2Only);
         let client = builder.build::<FullBody>();
         let requests = (0..100)
             .map(|request| {

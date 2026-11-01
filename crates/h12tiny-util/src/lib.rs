@@ -127,6 +127,9 @@ where
     HttpBodyExt::boxed_unsync(HttpBodyExt::map_err(body, Into::into))
 }
 
+/// The largest chunk [`ReaderStream::with_chunk_size`] accepts.
+pub const MAX_READER_STREAM_CHUNK_SIZE: usize = 16 * 1024 * 1024;
+
 /// A stream of chunks read from a `futures-io` asynchronous reader.
 ///
 /// This is intentionally a small adapter rather than a filesystem
@@ -153,8 +156,11 @@ impl<R> ReaderStream<R> {
     }
 
     /// Set the maximum size of each emitted chunk.
+    ///
+    /// Values are clamped to `1..=MAX_READER_STREAM_CHUNK_SIZE` so a
+    /// configuration mistake cannot request an unbounded allocation.
     pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
-        self.chunk_size = chunk_size.max(1);
+        self.chunk_size = chunk_size.clamp(1, MAX_READER_STREAM_CHUNK_SIZE);
         self
     }
 
@@ -767,6 +773,16 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].as_ref().unwrap().as_ref(), b"one" as &[u8]);
         assert_eq!(chunks[1].as_ref().unwrap().as_ref(), b"two" as &[u8]);
+    }
+
+    #[test]
+    fn reader_stream_bounds_configured_chunk_sizes() {
+        let oversized = ReaderStream::new(ControlledReader::new(b"x", 0, 1))
+            .with_chunk_size(usize::MAX);
+        assert_eq!(oversized.chunk_size, MAX_READER_STREAM_CHUNK_SIZE);
+
+        let zero = ReaderStream::new(ControlledReader::new(b"x", 0, 1)).with_chunk_size(0);
+        assert_eq!(zero.chunk_size, 1);
     }
 
     #[test]

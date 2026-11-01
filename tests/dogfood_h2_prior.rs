@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_net::TcpListener;
 use bytes::Bytes;
 use futures_util::future::{self, Either};
-use h12tiny::client::Client;
+use h12tiny::client::{Client, Protocol};
 #[cfg(not(feature = "http1"))]
 use h12tiny::client::{ConnectionProtocol, ResponseInfo};
 use h12tiny::io::FuturesIo;
@@ -92,7 +92,7 @@ fn h2_client_and_auto_server_interoperate_over_cleartext_prior_knowledge() {
         });
 
         let mut builder = Client::builder(SmolExecutor);
-        builder.http2_only(true);
+        builder.protocol(Protocol::Http2Only);
         let client = builder.build::<EmptyBody>();
         let response = client
             .request(
@@ -163,7 +163,7 @@ fn concurrent_first_h2_requests_share_one_establishment_and_session() {
         });
 
         let mut builder = Client::builder(SmolExecutor);
-        builder.http2_only(true);
+        builder.protocol(Protocol::Http2Only);
         let client = builder.build::<EmptyBody>();
         let requests = (0..16)
             .map(|index| {

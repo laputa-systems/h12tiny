@@ -4,6 +4,7 @@ mod support;
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 #[cfg(feature = "http1")]
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use async_net::TcpStream;
 use futures_channel::oneshot;
 use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use futures_util::future::{self, Either};
-use h12tiny::client::{Client, DebugEvent, DebugEventLog, ErrorKind};
+use h12tiny::client::{Client, DebugEvent, DebugEventLog, ErrorKind, Protocol};
 #[cfg(feature = "http1")]
 use h12tiny::client::{Connector, TcpConnected, TcpDialFuture, TcpDialer};
 use http::{Request, Response, StatusCode};
@@ -102,7 +103,7 @@ fn failed_h2_establishment_releases_multiple_waiters_for_later_success() {
         builder.connector(Connector::with_tcp_dialer(dialer));
         let events = DebugEventLog::default();
         builder.debug_event_log(events.clone());
-        builder.http2_only(true);
+        builder.protocol(Protocol::Http2Only);
         let client = builder.build::<FullBody>();
 
         let server = smol::spawn(async move {
@@ -374,7 +375,7 @@ fn h1_connection_limit_queues_same_origin_requests_without_opening_another_socke
         });
 
         let mut builder = Client::builder(SmolExecutor);
-        builder.pool_max_connections_per_host(1);
+        builder.pool_max_connections_per_host(NonZeroUsize::new(1).unwrap());
         let client = builder.build::<FullBody>();
         let first = smol::spawn(
             client.clone().request(
@@ -547,7 +548,7 @@ async fn queued_h1_request_after_slot_release(cancel_first: bool) {
     });
 
     let mut builder = Client::builder(SmolExecutor);
-    builder.pool_max_connections_per_host(1);
+    builder.pool_max_connections_per_host(NonZeroUsize::new(1).unwrap());
     let client = builder.build::<FullBody>();
     let first = smol::spawn(client.clone().request(
         Request::builder().uri(format!("http://{address}/first"))

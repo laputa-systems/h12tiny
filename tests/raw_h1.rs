@@ -114,7 +114,9 @@ fn request_headers_timeout_cancels_only_the_pending_exchange() {
                     .uri(format!("http://{address}/pending-headers"))
                     .body(EmptyBody)
                     .unwrap(),
-                RequestOptions::new().with_headers_timeout(Duration::ZERO),
+                RequestOptions::new()
+                    .with_headers_timeout(Duration::from_nanos(1))
+                    .unwrap(),
             )
             .await;
 
@@ -195,7 +197,9 @@ fn sequential_h1_requests_reuse_one_direct_connection() {
                     .uri(format!("http://{address}/two"))
                     .body(EmptyBody)
                     .unwrap(),
-                RequestOptions::new().with_connect_timeout(Duration::ZERO),
+                RequestOptions::new()
+                    .with_connect_timeout(Duration::from_nanos(1))
+                    .unwrap(),
             )
             .await
             .unwrap();

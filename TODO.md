@@ -11,15 +11,6 @@ Next: 16
 - **Effort:** M
 - **Design:** `docs/rfc/H12T-12-production-bounds.md`
 
-### H12T-14 · P2 · Client and body builders admit invalid states that fail at runtime
-
-- **Area:** Types
-- **Where:** `crates/h12tiny-client/src/lib.rs:1116-1123`, `crates/h12tiny-client/src/lib.rs:1159-1173`, `crates/h12tiny-client/src/connect.rs:593-597`, `crates/h12tiny-client/src/lib.rs:305-317`, `crates/h12tiny-util/src/lib.rs:156-159`, `crates/h12tiny-client-sync/src/lib.rs:789-800`
-- **Problem:** `pool_max_connections_per_host(0)` means unlimited while adjacent `pool_max_idle_per_host` treats `0` as zero; `http1_only()` plus `http2_only(true)` combine into an H2-required pool over H1-only ALPN and fail at handshake; `Http2Settings` accepts any `u32`/`Duration` and silently drops inert settings; zero `Duration` timeouts are accepted and instantly expire (the test suite uses `Duration::ZERO` to force timeout); `ReaderStream::with_chunk_size` clamps only the bottom so `usize::MAX` is a one-call OOM; `BodyMode::Chunked` permits `complete: true` with `remaining > 0`.
-- **Recommendation:** Split limited/unlimited into `Option` or `NonZero` types, make the protocol selector a single enum with reversible transitions, validate H2 settings at construction, reject or normalize zero timeouts consistently, bound chunk size, and separate the chunked-complete state.
-- **Fix with:** `make-invalid-states-unrepresentable`
-- **Effort:** M
-
 ### H12T-15 · P2 · TLS trust selection and failure signals are easy to misread
 
 - **Area:** Security

@@ -79,9 +79,11 @@ trust. Callers can:
   `Connector::with_tls_provider(...)` while keeping system trust. Neither
   installs nor reads Rustls' process-global provider.
 
-`http1_only()` restricts the client builder's ALPN to HTTP/1.1, including a
-caller-built TLS configuration. Other custom ALPN offerings remain explicit
-caller policy.
+`Protocol::Http1Only` restricts the client builder's ALPN to HTTP/1.1,
+including a caller-built TLS configuration. `Protocol::Http2Only` requires h2
+from the configured offerings rather than replacing them. Selecting
+`Protocol::Auto` removes the HTTP/1.1 restriction; other custom ALPN
+offerings remain explicit caller policy.
 
 ## Why verifier-level mitigation matters
 
