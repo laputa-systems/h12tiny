@@ -86,7 +86,7 @@ pub struct Iter {
     fields: header::IntoIter<HeaderValue>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,
@@ -101,6 +101,18 @@ struct HeaderBlock {
     /// headers frame.
     pseudo: Pseudo,
 }
+
+impl PartialEq for HeaderBlock {
+    fn eq(&self, other: &Self) -> bool {
+        // field_size is derived from fields and is only filled while decoding,
+        // so comparing it would make an outgoing frame unequal to its wire form.
+        self.fields == other.fields
+            && self.is_over_size == other.is_over_size
+            && self.pseudo == other.pseudo
+    }
+}
+
+impl Eq for HeaderBlock {}
 
 #[derive(Debug)]
 struct EncodingHeaderBlock {
