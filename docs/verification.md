@@ -67,7 +67,7 @@ The pinned nightly is the development toolchain; see the
 `make publish` bumps h12tiny workspace minor versions, commits and tags the
 release, and publishes h12tiny crates in dependency order. It does not publish
 the fork packages. The fork manifests require smolith crates, at
-`laputa-h2-futures-lite` 0.4.20-beta.1, `laputa-hyper-futures-lite`
+`laputa-h2-futures-lite` 0.4.20-beta.2, `laputa-hyper-futures-lite`
 1.12.0-beta.1, and `laputa-fastwebsockets-futures-lite` 0.10.1. Check each
 required version on crates.io before releasing. Publish missing smolith
 packages first, followed by the forks in that order. Packaging a fork drops
