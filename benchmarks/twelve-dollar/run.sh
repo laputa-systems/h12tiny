@@ -431,7 +431,8 @@ cmd_smoke() {
     die "app did not become healthy"
   fi
 
-  if ! quiet_perf_gate; then
+  if ! quiet_perf_gate 2> "$result_dir/gate-before.log"; then
+    cat "$result_dir/gate-before.log" >&2
     smoke_discard=true
     echo "perf gate deferred: host busy" >&2
     exit 75
@@ -498,8 +499,10 @@ cmd_smoke() {
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   gate_after=false
-  if quiet_perf_gate -1; then
+  if quiet_perf_gate -1 2> "$result_dir/gate-after.log"; then
     gate_after=true
+  else
+    cat "$result_dir/gate-after.log" >&2
   fi
 
   touch "$result_dir/k6-stats.done"

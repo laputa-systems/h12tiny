@@ -311,11 +311,15 @@ defer_and_stop() {
 }
 
 wait_for_gate() {
-  local attempt
+  local gate_log="$1" attempt
   for attempt in $(seq 1 "$GATE_ATTEMPTS"); do
-    if quiet_perf_gate; then
+    printf 'gate attempt %s\n' "$attempt" >> "$gate_log"
+    if quiet_perf_gate 2>> "$gate_log"; then
+      printf 'gate passed\n' >> "$gate_log"
       return 0
     fi
+    printf 'gate busy\n' >> "$gate_log"
+    cat "$gate_log" >&2
     if [ "$attempt" -lt "$GATE_ATTEMPTS" ]; then
       echo "ceiling: perf gate busy, retrying in ${GATE_RETRY_SECONDS}s (attempt $attempt of $GATE_ATTEMPTS)" >&2
       sleep "$GATE_RETRY_SECONDS"
@@ -390,7 +394,7 @@ run_probe() {
     die "static app did not become healthy"
   fi
 
-  if ! wait_for_gate; then
+  if ! wait_for_gate "$dir/gate-before.log"; then
     exit 75
   fi
   local gate_before=true
@@ -433,8 +437,10 @@ run_probe() {
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   local gate_after=false
-  if quiet_perf_gate -1; then
+  if quiet_perf_gate -1 2> "$dir/gate-after.log"; then
     gate_after=true
+  else
+    cat "$dir/gate-after.log" >&2
   fi
 
   touch "$dir/k6-stats.done"
