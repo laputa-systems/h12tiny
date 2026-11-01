@@ -240,6 +240,40 @@ cmd_smoke() {
   mkdir -p "$STATE/results" "$result_dir"
 
   harness="/runs/$run_id/harness"
+  app_pid=""
+  collector_pid=""
+  stats_pid=""
+  k6_pid=""
+  k6_started=false
+  smoke_discard=false
+  smoke_cleanup() {
+    if [ "$k6_started" = true ]; then
+      docker rm --force "$K6_NAME" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$k6_pid" ]; then
+      kill -TERM "$k6_pid" 2>/dev/null || true
+      wait "$k6_pid" 2>/dev/null || true
+    fi
+    if [ -n "$stats_pid" ]; then
+      touch "$result_dir/k6-stats.done"
+      wait "$stats_pid" 2>/dev/null || true
+      rm -f "$result_dir/k6-stats.done"
+    fi
+    if [ -n "$collector_pid" ]; then
+      docker exec "$BOX" kill -TERM "$collector_pid" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$app_pid" ]; then
+      docker exec "$BOX" env PIDFILE="/runs/$run_id/app.pid" bash "$harness/box/app.sh" stop >/dev/null 2>&1 || true
+    fi
+    docker exec "$BOX" bash "$harness/box/nginx-check.sh" stop >/dev/null 2>&1 || true
+    docker exec "$BOX" rm -rf "/runs/$run_id" >/dev/null 2>&1 || true
+    if [ "$smoke_discard" = true ]; then
+      rm -rf "$result_dir"
+    fi
+  }
+  trap smoke_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   docker exec "$BOX" mkdir -p "/runs/$run_id"
   docker exec "$BOX" chmod 777 "/runs/$run_id"
   docker exec "$BOX" mkdir -p "$harness/box"
@@ -371,24 +405,6 @@ cmd_smoke() {
       db_preexisting: false
     }' > "$result_dir/run.json"
 
-  app_pid=""
-  collector_pid=""
-  smoke_discard=false
-  smoke_cleanup() {
-    if [ -n "${collector_pid:-}" ]; then
-      docker exec "$BOX" kill -TERM "$collector_pid" >/dev/null 2>&1 || true
-    fi
-    if [ -n "${app_pid:-}" ]; then
-      docker exec "$BOX" kill -TERM "$app_pid" >/dev/null 2>&1 || true
-    fi
-    docker exec "$BOX" bash "$harness/box/nginx-check.sh" stop >/dev/null 2>&1 || true
-    if [ "$smoke_discard" = true ]; then
-      docker exec "$BOX" rm -rf "/runs/$run_id" >/dev/null 2>&1 || true
-      rm -rf "$result_dir"
-    fi
-  }
-  trap smoke_cleanup EXIT
-
   echo "== start app on $app_host:$app_port"
   docker exec -d "$BOX" env \
     SQLITE_PATH="/runs/$run_id/feed.db" \
@@ -455,6 +471,7 @@ cmd_smoke() {
   echo "== k6 $vus VUs, ramp ${ramp_s}s, hold ${hold_s}s against http://$box_ip:$target_port"
   k6_started_ms="$(( $(date +%s) * 1000 ))"
   set +e
+  k6_started=true
   docker run --rm \
     --name "$K6_NAME" \
     --network "$NET" \
@@ -470,8 +487,12 @@ cmd_smoke() {
     --env TOKENS=/challenge/seed/tokens.json \
     "$K6_IMAGE" run \
     --summary-export "/runs/$run_id/k6-summary.json" \
-    /challenge/bench/load.js > "$result_dir/k6.log" 2>&1
+    /challenge/bench/load.js > "$result_dir/k6.log" 2>&1 &
+  k6_pid=$!
+  wait "$k6_pid"
   k6_rc=$?
+  k6_pid=""
+  k6_started=false
   set -e
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
@@ -482,6 +503,7 @@ cmd_smoke() {
 
   touch "$result_dir/k6-stats.done"
   wait "$stats_pid" 2>/dev/null || true
+  stats_pid=""
   rm -f "$result_dir/k6-stats.done"
 
   if [ -n "$collector_pid" ]; then
@@ -536,7 +558,7 @@ cmd_smoke() {
 
   valid="$(jaq -r '.valid' "$result_dir/summary.json")"
   docker exec "$BOX" rm -rf "/runs/$run_id"
-  trap - EXIT
+  trap - EXIT INT TERM
 
   if [ "$valid" != true ]; then
     echo "smoke: run is not valid under D9; see $result_dir/summary.json" >&2
