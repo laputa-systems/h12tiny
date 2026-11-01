@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::fmt;
 use std::future::Future;
+use std::io;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -780,10 +782,17 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+enum HandlerTimeout {
+    Inherit,
+    Disabled,
+    Deadline(Duration),
+}
+
 struct Endpoint<S> {
     handler: Arc<dyn ErasedHandler<S>>,
     body_limit: Option<usize>,
-    timeout: Option<Duration>,
+    timeout: HandlerTimeout,
 }
 
 impl<S> Clone for Endpoint<S> {
@@ -796,13 +805,29 @@ impl<S> Clone for Endpoint<S> {
     }
 }
 
+impl<S> Endpoint<S> {
+    fn apply_defaults(&mut self, body_limit: Option<usize>, timeout: Option<Duration>) {
+        if self.body_limit.is_none() {
+            self.body_limit = body_limit;
+        }
+        if matches!(self.timeout, HandlerTimeout::Inherit) {
+            if let Some(timeout) = timeout {
+                self.timeout = HandlerTimeout::Deadline(timeout);
+            }
+        }
+    }
+}
+
 impl<S> Endpoint<S>
 where
     S: Clone + Send + Sync + 'static,
 {
     fn call(&self, request: Request, state: Option<S>, params: RouteParams) -> HandlerFuture {
         let body_limit = self.body_limit;
-        let timeout = self.timeout;
+        let timeout = match self.timeout {
+            HandlerTimeout::Deadline(duration) => Some(duration),
+            HandlerTimeout::Inherit | HandlerTimeout::Disabled => None,
+        };
         let request = match body_limit {
             Some(limit) => request.map(|body| boxed_body(LimitedBody::new(body, limit))),
             None => request,
@@ -859,7 +884,7 @@ impl<S> MethodRouter<S> {
     /// Set an application-handler deadline for every method in this route.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         for endpoint in self.methods.values_mut() {
-            endpoint.timeout = Some(timeout);
+            endpoint.timeout = HandlerTimeout::Deadline(timeout);
         }
         self
     }
@@ -867,9 +892,15 @@ impl<S> MethodRouter<S> {
     /// Disable a previously configured handler deadline.
     pub fn without_timeout(mut self) -> Self {
         for endpoint in self.methods.values_mut() {
-            endpoint.timeout = None;
+            endpoint.timeout = HandlerTimeout::Disabled;
         }
         self
+    }
+
+    fn apply_defaults(&mut self, body_limit: Option<usize>, timeout: Option<Duration>) {
+        for endpoint in self.methods.values_mut() {
+            endpoint.apply_defaults(body_limit, timeout);
+        }
     }
 
     fn merge(&mut self, other: Self) {
@@ -898,7 +929,7 @@ where
                 marker: PhantomData,
             }),
             body_limit: None,
-            timeout: None,
+            timeout: HandlerTimeout::Inherit,
         },
     )
 }
@@ -999,10 +1030,42 @@ impl<S> Clone for RouterRoutes<S> {
     }
 }
 
+/// Conservative router limits applied by [`Router::production`].
+#[derive(Clone, Copy, Debug)]
+pub struct RouterBounds {
+    /// Maximum request body bytes collected by built-in extractors.
+    pub body_limit: NonZeroUsize,
+    /// Application-handler deadline; `None` leaves handlers unbounded.
+    pub handler_timeout: Option<Duration>,
+}
+
+impl Default for RouterBounds {
+    fn default() -> Self {
+        Self {
+            body_limit: NonZeroUsize::new(1024 * 1024).expect("production body limit is nonzero"),
+            handler_timeout: Some(Duration::from_secs(30)),
+        }
+    }
+}
+
+impl RouterBounds {
+    fn validate(self) -> io::Result<Self> {
+        if matches!(self.handler_timeout, Some(timeout) if timeout.is_zero()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "handler timeout must be greater than zero",
+            ));
+        }
+        Ok(self)
+    }
+}
+
 /// A small path-and-method router.
 pub struct Router<S = ()> {
     routes: Arc<RouterRoutes<S>>,
     fallback: Option<Endpoint<S>>,
+    default_body_limit: Option<usize>,
+    default_timeout: Option<Duration>,
     state: Option<S>,
     #[cfg(feature = "cors")]
     cors: Option<Arc<Cors>>,
@@ -1016,6 +1079,8 @@ where
         Self {
             routes: Arc::clone(&self.routes),
             fallback: self.fallback.clone(),
+            default_body_limit: self.default_body_limit,
+            default_timeout: self.default_timeout,
             state: self.state.clone(),
             #[cfg(feature = "cors")]
             cors: self.cors.clone(),
@@ -1033,10 +1098,43 @@ impl<S> Router<S> {
                 matcher: MatchRouter::new(),
             }),
             fallback: None,
+            default_body_limit: None,
+            default_timeout: None,
             state: None,
             #[cfg(feature = "cors")]
             cors: None,
         }
+    }
+
+    /// Applies conservative defaults to this router and to routes added later.
+    ///
+    /// Sets a 1 MiB request body limit and a 30 s handler deadline. Explicit
+    /// [`MethodRouter::body_limit`], [`MethodRouter::timeout`], and
+    /// [`MethodRouter::without_timeout`] settings are preserved, as are
+    /// per-route values already applied by [`Router::body_limit`] and
+    /// [`Router::timeout`].
+    pub fn production(self) -> Self {
+        self.with_bounds(RouterBounds::default())
+            .expect("production bounds are valid")
+    }
+
+    /// Applies explicit defaults to this router and to routes added later.
+    ///
+    /// A zero handler timeout is rejected. Use `handler_timeout: None` to keep
+    /// handlers unbounded while still applying the body limit.
+    pub fn with_bounds(mut self, bounds: RouterBounds) -> io::Result<Self> {
+        let bounds = bounds.validate()?;
+        self.default_body_limit = Some(bounds.body_limit.get());
+        self.default_timeout = bounds.handler_timeout;
+        let body_limit = self.default_body_limit;
+        let timeout = self.default_timeout;
+        for (_, entry) in &mut Arc::make_mut(&mut self.routes).routes {
+            entry.methods.apply_defaults(body_limit, timeout);
+        }
+        if let Some(fallback) = self.fallback.as_mut() {
+            fallback.apply_defaults(body_limit, timeout);
+        }
+        Ok(self)
     }
 
     /// Attach the shared state used by [`State`] extractors.
@@ -1046,7 +1144,8 @@ impl<S> Router<S> {
     }
 
     /// Add or extend a path route.
-    pub fn route(mut self, path: &str, methods: MethodRouter<S>) -> Self {
+    pub fn route(mut self, path: &str, mut methods: MethodRouter<S>) -> Self {
+        methods.apply_defaults(self.default_body_limit, self.default_timeout);
         let routes = Arc::make_mut(&mut self.routes);
         if let Some((_, entry)) = routes.routes.iter_mut().find(|(route, _)| route == path) {
             entry.methods.merge(methods);
@@ -1101,14 +1200,16 @@ impl<S> Router<S> {
         S: Clone + Send + Sync + 'static,
         T: Send + 'static,
     {
-        self.fallback = Some(Endpoint {
+        let mut endpoint = Endpoint {
             handler: Arc::new(HandlerAdapter {
                 handler,
                 marker: PhantomData,
             }),
             body_limit: None,
-            timeout: None,
-        });
+            timeout: HandlerTimeout::Inherit,
+        };
+        endpoint.apply_defaults(self.default_body_limit, self.default_timeout);
+        self.fallback = Some(endpoint);
         self
     }
 
@@ -1127,8 +1228,13 @@ impl<S> Router<S> {
             }
             self = self.route(&path, entry.methods);
         }
+        let body_limit = self.default_body_limit;
+        let timeout = self.default_timeout;
         if self.fallback.is_none() {
-            self.fallback = nested.fallback;
+            self.fallback = nested.fallback.map(|mut fallback| {
+                fallback.apply_defaults(body_limit, timeout);
+                fallback
+            });
         }
         if self.state.is_none() {
             self.state = nested.state;
@@ -1141,8 +1247,13 @@ impl<S> Router<S> {
         for (path, entry) in Arc::unwrap_or_clone(other.routes).routes {
             self = self.route(&path, entry.methods);
         }
+        let body_limit = self.default_body_limit;
+        let timeout = self.default_timeout;
         if self.fallback.is_none() {
-            self.fallback = other.fallback;
+            self.fallback = other.fallback.map(|mut fallback| {
+                fallback.apply_defaults(body_limit, timeout);
+                fallback
+            });
         }
         if self.state.is_none() {
             self.state = other.state;
@@ -2499,6 +2610,162 @@ mod tests {
             ),
         );
         assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn production_bounds_are_conservative_and_reject_zero_timeouts() {
+        let bounds = RouterBounds::default();
+        assert_eq!(bounds.body_limit.get(), 1024 * 1024);
+        assert_eq!(bounds.handler_timeout, Some(Duration::from_secs(30)));
+        assert!(bounds.validate().is_ok());
+
+        let invalid = RouterBounds {
+            body_limit: NonZeroUsize::new(1).expect("nonzero"),
+            handler_timeout: Some(Duration::ZERO),
+        };
+        assert_eq!(
+            invalid
+                .validate()
+                .expect_err("zero timeout must fail")
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn production_defaults_apply_to_existing_future_nested_routes_and_fallback() {
+        let bounds = RouterBounds {
+            body_limit: NonZeroUsize::new(3).expect("nonzero"),
+            handler_timeout: Some(Duration::from_millis(5)),
+        };
+        let router = Router::new()
+            .route(
+                "/existing",
+                post(|body: Bytes| async move { body.len().to_string() }),
+            )
+            .with_bounds(bounds)
+            .expect("bounds are valid")
+            .route(
+                "/future",
+                post(|body: Bytes| async move { body.len().to_string() }),
+            )
+            .route(
+                "/slow",
+                get(|| async {
+                    async_io::Timer::after(Duration::from_millis(50)).await;
+                    "late"
+                }),
+            )
+            .nest(
+                "/api",
+                Router::new()
+                    .route(
+                        "/nested",
+                        post(|body: Bytes| async move { body.len().to_string() }),
+                    )
+                    .fallback(|body: Bytes| async move { body.len().to_string() }),
+            );
+
+        for path in ["/existing", "/future", "/api/nested"] {
+            let response = block_on(
+                router.call(
+                    Request::post(path)
+                        .body(h12tiny_util::bytes_body("1234"))
+                        .unwrap(),
+                ),
+            );
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+        }
+
+        let response = block_on(
+            router.call(
+                Request::post("/missing")
+                    .body(h12tiny_util::bytes_body("1234"))
+                    .unwrap(),
+            ),
+        );
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let response = block_on(
+            router.call(
+                Request::get("/slow")
+                    .body(h12tiny_util::empty_body())
+                    .unwrap(),
+            ),
+        );
+        assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+        let merged = Router::<()>::new()
+            .with_bounds(bounds)
+            .expect("bounds are valid")
+            .merge(
+                Router::<()>::new()
+                    .route(
+                        "/merged",
+                        post(|body: Bytes| async move { body.len().to_string() }),
+                    )
+                    .fallback(|body: Bytes| async move { body.len().to_string() }),
+            );
+        for path in ["/merged", "/missing"] {
+            let response = block_on(
+                merged.call(
+                    Request::post(path)
+                        .body(h12tiny_util::bytes_body("1234"))
+                        .unwrap(),
+                ),
+            );
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+        }
+    }
+
+    #[test]
+    fn production_defaults_preserve_explicit_method_settings() {
+        let bounds = RouterBounds {
+            body_limit: NonZeroUsize::new(3).expect("nonzero"),
+            handler_timeout: Some(Duration::from_millis(1)),
+        };
+        let router = Router::new()
+            .route(
+                "/upload",
+                post(|body: Bytes| async move { body.len().to_string() }).body_limit(8),
+            )
+            .route(
+                "/slow",
+                get(|| async {
+                    async_io::Timer::after(Duration::from_millis(20)).await;
+                    "late"
+                })
+                .without_timeout(),
+            )
+            .with_bounds(bounds)
+            .expect("bounds are valid");
+
+        let response = block_on(
+            router.call(
+                Request::post("/upload")
+                    .body(h12tiny_util::bytes_body("12345678"))
+                    .unwrap(),
+            ),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = block_on(
+            router.call(
+                Request::post("/upload")
+                    .body(h12tiny_util::bytes_body("123456789"))
+                    .unwrap(),
+            ),
+        );
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let response = block_on(
+            router.call(
+                Request::get("/slow")
+                    .body(h12tiny_util::empty_body())
+                    .unwrap(),
+            ),
+        );
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[cfg(feature = "websocket")]

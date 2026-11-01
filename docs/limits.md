@@ -58,6 +58,6 @@ stale retries, and 10 s DNS/TCP/TLS plus 30 s header deadlines.
 
 | Bound | Default | Source | Configuration |
 | --- | --- | --- | --- |
-| Request body limit | none, collected as `usize::MAX` | `crates/h12tiny-web/src/lib.rs` | `Router::body_limit` or `MethodRouter::body_limit`; a fallback handler starts with no limit |
-| Handler deadline | none | `crates/h12tiny-web/src/lib.rs` | `Router::timeout` or `MethodRouter::timeout`; `without_timeout` clears it |
+| Request body limit | none, collected as `usize::MAX` | `crates/h12tiny-web/src/lib.rs` | `Router::body_limit` or `MethodRouter::body_limit`; a fallback handler starts with no limit. `Router::production` uses 1 MiB everywhere |
+| Handler deadline | none | `crates/h12tiny-web/src/lib.rs` | `Router::timeout` or `MethodRouter::timeout`; `without_timeout` clears it. `Router::production` uses 30 s |
 | SSE keepalive interval | 15 s | `crates/h12tiny-web/src/lib.rs` | `KeepAlive::interval`; a zero interval is rejected |

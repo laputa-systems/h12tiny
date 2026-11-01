@@ -16,9 +16,13 @@ raw request and query extraction; and a small `IntoResponse` conversion.
 The same service can be used with H1, H2, cleartext auto selection, or TLS
 server connections.
 
-Router body limits and timeouts apply to routes present when configured,
-including only methods present in each method router; later additions and the
-fallback keep their own settings. Built-in byte and JSON extractors return 413
+Router body limits and timeouts set with `Router::body_limit` and
+`Router::timeout` apply to routes present when configured, including only
+methods present in each method router; later additions and the fallback keep
+their own settings. `Router::production` instead applies defaults to existing
+routes, later routes, nested and merged routes, and the fallback: 1 MiB and
+30 s, preserved over any explicit `MethodRouter` setting or
+`without_timeout()`. Built-in byte and JSON extractors return 413
 when a body limit is exceeded. Raw request handlers receive a body error they
 can downcast to `BodyLimitExceeded`; other body errors retain their original
 concrete type, and raw handlers own response mapping. Handler deadlines produce
