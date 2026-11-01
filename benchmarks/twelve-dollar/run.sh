@@ -499,7 +499,7 @@ cmd_smoke() {
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   gate_after=false
-  if settled_perf_gate -1 2> "$result_dir/gate-after.log"; then
+  if quiet_perf_gate -1 2> "$result_dir/gate-after.log"; then
     gate_after=true
   else
     cat "$result_dir/gate-after.log" >&2

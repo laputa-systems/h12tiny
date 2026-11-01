@@ -76,7 +76,7 @@ k6_pid=""
 k6_started=false
 set -e
 gate_after=false
-if settled_perf_gate -1 2> "$result/gate-after.log"; then gate_after=true; else cat "$result/gate-after.log" >&2; fi
+if quiet_perf_gate -1 2> "$result/gate-after.log"; then gate_after=true; else cat "$result/gate-after.log" >&2; fi
 touch "$result/stats.done"
 wait "$stats_pid" || true
 stats_pid=""

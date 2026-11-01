@@ -455,7 +455,7 @@ run_probe() {
   k6_finished_ms="$(( $(date +%s) * 1000 ))"
 
   local gate_after=false
-  if settled_perf_gate -1 2> "$dir/gate-after.log"; then
+  if quiet_perf_gate -1 2> "$dir/gate-after.log"; then
     gate_after=true
   else
     cat "$dir/gate-after.log" >&2
