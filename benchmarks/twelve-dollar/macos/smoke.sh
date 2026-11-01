@@ -19,19 +19,25 @@ source "$bench/tools/perf-gate.sh"
 dirty=false
 if [ -n "$(git -C "$bench/../.." status --porcelain)" ]; then dirty=true; fi
 mkdir -p "$result"
-cp "$challenge/seed/feed.db" "$result/feed.db"
-bash "$bench/build.sh"
 app_pid=""
 time_pid=""
 stats_pid=""
+k6_pid=""
+k6_started=false
 cleanup() {
+  if [ "$k6_started" = true ]; then docker rm -f h12t-twelve-k6 >/dev/null 2>&1 || true; fi
+  if [ -n "$k6_pid" ]; then kill -TERM "$k6_pid" 2>/dev/null || true; wait "$k6_pid" 2>/dev/null || true; fi
   if [ -n "$stats_pid" ]; then touch "$result/stats.done"; wait "$stats_pid" 2>/dev/null || true; fi
+  if [ -z "$app_pid" ] && [ -n "$time_pid" ]; then app_pid="$(pgrep -P "$time_pid" | head -1 || true)"; fi
   if [ -n "$app_pid" ]; then kill -TERM "$app_pid" 2>/dev/null || true; fi
   if [ -n "$time_pid" ]; then wait "$time_pid" 2>/dev/null || true; fi
-  docker rm -f h12t-twelve-k6 >/dev/null 2>&1 || true
   rm -f "$result/feed.db" "$result/feed.db-wal" "$result/feed.db-shm" "$result/stats.done"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cp "$challenge/seed/feed.db" "$result/feed.db"
+bash "$bench/build.sh"
 (
   ulimit -n 65535
   export SQLITE_PATH="$result/feed.db" JWT_SECRET=twelve-dollar-challenge HOST=0.0.0.0 PORT=3000 TWELVE_DOLLAR_READERS="$readers"
@@ -57,12 +63,17 @@ if ! quiet_perf_gate; then echo 'perf gate deferred: host busy' >&2; exit 75; fi
 ) &
 stats_pid=$!
 set +e
+k6_started=true
 docker run --rm --name h12t-twelve-k6 --network "$network" --cpus=8 --memory=10g --ulimit nofile=65535:65535 \
   --volume "$challenge:/challenge:ro" --volume "$result:/result" \
   --env BASE_URL=http://host.docker.internal:3000 --env VUS="$vus" --env RAMP_UP="${ramp}s" \
   --env DURATION="${hold}s" --env TOKENS=/challenge/seed/tokens.json \
-  "$image" run --summary-export /result/k6-summary.json /challenge/bench/load.js > "$result/k6.log" 2>&1
+  "$image" run --summary-export /result/k6-summary.json /challenge/bench/load.js > "$result/k6.log" 2>&1 &
+k6_pid=$!
+wait "$k6_pid"
 k6_rc=$?
+k6_pid=""
+k6_started=false
 set -e
 gate_after=false
 if quiet_perf_gate -1; then gate_after=true; fi
