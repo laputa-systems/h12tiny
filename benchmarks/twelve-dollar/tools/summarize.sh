@@ -221,6 +221,9 @@ fi
 [ "$db_preexisting" = false ] || add_reason "database path existed before the run"
 [ "$k6_cpu_within" = true ] || add_reason "k6 container CPU reached ${k6_max_cpu}% of 800% allocation"
 [ "$k6_mem_within" = true ] || add_reason "k6 container memory reached ${k6_max_mem}% of allocation"
+if ! jaq -se 'length > 0 and all(.[]; (.CPUPerc | type == "string" and test("^[0-9.]+%$")) and (.MemPerc | type == "string" and test("^[0-9.]+%$")))' "$RUN_DIR/k6-stats.log" >/dev/null 2>&1; then
+  add_reason "k6 resource samples are missing or malformed"
+fi
 [ "$summary_matches_stdout" = true ] || add_reason "k6 summary http_reqs ${k6_count} did not match stdout ${k6_stdout_count:-missing}"
 if [ "$mode" = nginx ] && [ "$k6_matches_nginx" != true ]; then
   add_reason "k6 http_reqs ${k6_count} did not match nginx access log ${nginx_lines} lines"
