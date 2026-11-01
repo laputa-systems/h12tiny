@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = []
+members = ["crates/app-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,6 +8,15 @@ edition = "2024"
 rust-version = "1.89"
 license = "MIT"
 publish = false
+
+[workspace.dependencies]
+base64 = "0.23"
+futures-channel = "0.3.34"
+hmac = "0.12.1"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.9"
 
 [profile.dev]
 debug = "line-tables-only"
