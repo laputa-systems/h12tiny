@@ -35,6 +35,12 @@ live under `.work/twelve-dollar/`.
   direct 25,000 VUs, both at the D8 caps rather than generator saturation. k6
   used 130 % CPU and 37.6 % memory at 14,000 VUs, and 353 % CPU and 67.3 %
   memory at 25,000 VUs, with no dropped iterations.
+- Run validity (`tools/perf-gate.sh`): the host gate ignores CPU from the
+  container runtime itself (`OrbStack Helper`), because that is the benchmark's
+  own containers plus their memory reclaim. Any other hot process still defers
+  the run, and the load average must stay under the gate limit. The exclusion
+  assumes the Docker VM runs only `h12t-twelve-*` containers; `docker ps` showed
+  nothing else at the measured gates.
 
 ## Loop timings
 
