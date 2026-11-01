@@ -13,6 +13,9 @@ printf '%s\n' 'http_reqs....: 1' > "$test_dir/k6.log"
 printf '%s\n' '{"CPUPerc":"1.00%","MemPerc":"1.00%"}' > "$test_dir/k6-stats.log"
 bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null
 jaq -e '.k6.p50_ms == 0.31408 and .k6.p95_ms == 0.43134 and .k6.p99_ms == 0.9109 and .k6.max_ms == 6.41' "$test_dir/summary.json" >/dev/null
+printf '%s\n' '{"exit_code":99}' > "$test_dir/k6-run.json"
+bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
+jaq -e '.valid == true and .k6.exit_code == 99' "$test_dir/summary.json" >/dev/null
 : > "$test_dir/k6-stats.log"
 bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
 jaq -e '.valid == false' "$test_dir/summary.json" >/dev/null

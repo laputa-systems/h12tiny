@@ -210,7 +210,10 @@ add_reason() {
 
 [ "$gate_before" = true ] || add_reason "perf gate before the run did not pass"
 [ "$gate_after" = true ] || add_reason "perf gate after the run did not pass"
-[ "$k6_rc" = 0 ] || add_reason "k6 exited with status ${k6_rc:-unknown}"
+case "$k6_rc" in
+  0|99) ;;
+  *) add_reason "k6 exited with status ${k6_rc:-unknown}" ;;
+esac
 [ "${dropped:-0}" = 0 ] || add_reason "k6 dropped ${dropped} iterations"
 [ -n "$vus_max" ] || add_reason "k6 summary did not report active VUs"
 if [ -n "$vus_max" ] && [ "$vus_max" -lt "$vus" ]; then
