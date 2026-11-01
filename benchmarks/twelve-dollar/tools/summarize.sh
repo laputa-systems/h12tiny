@@ -93,6 +93,10 @@ else
   status_nginx="${status_nginx%,}}"
 fi
 
+nginx_client_cancelled="$(printf '%s\n' "$nginx_status_rows" | awk '$1 == 499 { print $2 }')"
+nginx_client_cancelled="${nginx_client_cancelled:-0}"
+nginx_completed=$((nginx_lines - nginx_client_cancelled))
+
 reader_threads="$(sed -n 's/.* reader_threads=\([0-9][0-9]*\).*/\1/p' "$RUN_DIR/app.log" | head -1)"
 executor_threads="$(sed -n 's/.* executor_threads=\([0-9][0-9]*\).*/\1/p' "$RUN_DIR/app.log" | head -1)"
 
@@ -207,7 +211,7 @@ fi
 k6_matches_nginx=null
 if [ "$mode" = nginx ]; then
   k6_matches_nginx=false
-  if [ "$k6_count" = "$nginx_lines" ]; then
+  if [ "$k6_count" = "$nginx_completed" ]; then
     k6_matches_nginx=true
   fi
 fi
@@ -241,7 +245,7 @@ if ! jaq -se 'length > 0 and all(.[]; (.CPUPerc | type == "string" and test("^[0
 fi
 [ "$summary_matches_stdout" = true ] || add_reason "k6 summary http_reqs ${k6_count} did not match stdout ${k6_stdout_count:-missing}"
 if [ "$mode" = nginx ] && [ "$k6_matches_nginx" != true ]; then
-  add_reason "k6 http_reqs ${k6_count} did not match nginx access log ${nginx_lines} lines"
+  add_reason "k6 http_reqs ${k6_count} did not match nginx completed requests ${nginx_completed} (${nginx_client_cancelled} client cancellations, ${nginx_lines} lines)"
 fi
 [ "$app_summary_present" = true ] || add_reason "app shutdown summary line missing"
 [ "$samples" -gt 0 ] || add_reason "collector produced no samples"
@@ -299,6 +303,7 @@ jaq -n \
   --argjson k6_cpu_within_allocation "$k6_cpu_within" \
   --argjson k6_memory_within_allocation "$k6_mem_within" \
   --argjson nginx_lines "$nginx_lines" \
+  --argjson nginx_client_cancelled "$nginx_client_cancelled" \
   --argjson summary_matches_stdout "$summary_matches_stdout" \
   --argjson k6_matches_nginx "$k6_matches_nginx" \
   --argjson app_summary_present "$app_summary_present" \
@@ -362,6 +367,8 @@ jaq -n \
       k6_summary_http_reqs: $http_reqs,
       k6_stdout_http_reqs: $http_reqs_stdout,
       nginx_access_lines: $nginx_lines,
+      nginx_client_cancelled: $nginx_client_cancelled,
+      nginx_completed_requests: ($nginx_lines - $nginx_client_cancelled),
       app_accepted: $app_accepted,
       app_rejected: $app_rejected,
       app_responses: $app_responses,

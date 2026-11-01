@@ -16,6 +16,23 @@ jaq -e '.k6.p50_ms == 0.31408 and .k6.p95_ms == 0.43134 and .k6.p99_ms == 0.9109
 bash "$root/benchmarks/twelve-dollar/tools/report.sh" "$test_dir" > /dev/null
 rg -q '\| CPU periods throttled \| 6(\.0+)? % \|' "$test_dir/report.md"
 rg -q '\| Peak app file descriptors \| 20 \|' "$test_dir/report.md"
+jaq '.mode = "nginx"' "$test_dir/run.json" > "$test_dir/nginx.json"
+mv "$test_dir/nginx.json" "$test_dir/run.json"
+printf '%s\n' \
+  '1.2.3.4 [01/Nov/2026:00:00:00 +0000] "GET /feed HTTP/1.1" 200 1 rt=0.001' \
+  '1.2.3.4 [01/Nov/2026:00:00:01 +0000] "POST /posts/1/like HTTP/1.1" 499 0 rt=0.001' > "$test_dir/nginx-access.log"
+bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null
+jaq -e '.valid == true and .counts.nginx_access_lines == 2 and .counts.nginx_client_cancelled == 1 and .counts.nginx_completed_requests == 1 and .counts.k6_matches_nginx == true' "$test_dir/summary.json" >/dev/null
+bash "$root/benchmarks/twelve-dollar/tools/report.sh" "$test_dir" > /dev/null
+rg -q -- '- nginx 499 client cancellations: 1' "$test_dir/report.md"
+printf '%s\n' \
+  '1.2.3.4 [01/Nov/2026:00:00:00 +0000] "GET /feed HTTP/1.1" 200 1 rt=0.001' \
+  '1.2.3.4 [01/Nov/2026:00:00:01 +0000] "POST /posts/1/like HTTP/1.1" 502 0 rt=0.001' > "$test_dir/nginx-access.log"
+bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1
+jaq -e '.valid == false and .counts.nginx_client_cancelled == 0 and .counts.k6_matches_nginx == false' "$test_dir/summary.json" >/dev/null
+jaq '.mode = "direct"' "$test_dir/run.json" > "$test_dir/direct.json"
+mv "$test_dir/direct.json" "$test_dir/run.json"
+: > "$test_dir/nginx-access.log"
 jaq 'del(.metrics.http_req_duration["p(99)"])' "$test_dir/k6-summary.json" > "$test_dir/incomplete.json"
 mv "$test_dir/incomplete.json" "$test_dir/k6-summary.json"
 bash "$root/benchmarks/twelve-dollar/tools/summarize.sh" "$test_dir" >/dev/null 2>&1

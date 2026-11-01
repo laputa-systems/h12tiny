@@ -39,6 +39,8 @@ hold="$(read_summary '.hold_s')"
 http_reqs="$(read_summary '.k6.http_reqs')"
 http_reqs_stdout="$(read_summary '.k6.http_reqs_stdout')"
 nginx_lines="$(read_summary '.counts.nginx_access_lines')"
+nginx_client_cancelled="$(read_summary '.counts.nginx_client_cancelled')"
+nginx_completed="$(read_summary '.counts.nginx_completed_requests')"
 summary_matches_stdout="$(read_summary '.counts.summary_matches_stdout')"
 k6_matches_nginx="$(read_summary '.counts.k6_matches_nginx')"
 app_responses="$(read_summary '.counts.app_responses')"
@@ -152,11 +154,15 @@ report="$RUN_DIR/report.md"
   printf -- '- k6 saved summary `http_reqs`: %s\n' "$http_reqs"
   printf -- '- k6 stdout `http_reqs`: %s\n' "${http_reqs_stdout:-missing}"
   printf -- '- nginx access-log lines: %s\n' "$nginx_count_value"
+  if [ "$mode" = nginx ]; then
+    printf -- '- nginx 499 client cancellations: %s\n' "$nginx_client_cancelled"
+    printf -- '- nginx completed requests (lines minus 499): %s\n' "$nginx_completed"
+  fi
   printf -- '- k6 summary equals k6 stdout: %s\n' "$summary_matches_stdout"
   if [ "$mode" = nginx ]; then
-    printf -- '- k6 `http_reqs` equals nginx access-log lines: %s\n' "$k6_matches_nginx"
+    printf -- '- k6 `http_reqs` equals nginx completed requests: %s\n' "$k6_matches_nginx"
   else
-    printf -- '- k6 `http_reqs` equals nginx access-log lines: not applicable (direct mode)\n'
+    printf -- '- k6 `http_reqs` equals nginx completed requests: not applicable (direct mode)\n'
   fi
   printf -- '- app shutdown summary responses: %s (accepted connections %s, rejected %s)\n\n' "$app_responses" "$app_accepted" "$app_rejected"
 
