@@ -574,11 +574,25 @@ cmd_ceiling() {
   echo "== results $result_dir"
 }
 
+cmd_macos_smoke() {
+  require_docker
+  require_challenge
+  [ "$mode" = direct ] || die 'macOS smoke requires --mode direct'
+  ensure_network
+  local run_id result_dir
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-macos-${opt_vus}vu"
+  result_dir="$STATE/results/$run_id"
+  bash "$HERE/macos/smoke.sh" "$HERE" "$CHALLENGE" "$result_dir" "$opt_vus" \
+    "$(duration_seconds "$opt_ramp")" "$(duration_seconds "$opt_duration")" \
+    "$opt_readers" "$K6_IMAGE" "$NET"
+}
+
 profile=box
 mode=nginx
 command=""
 opt_vus=50
 opt_duration=30s
+duration_set=false
 opt_ramp=10s
 opt_readers=2
 
@@ -618,10 +632,12 @@ while [ $# -gt 0 ]; do
     --duration)
       [ $# -ge 2 ] || { usage; exit 2; }
       opt_duration="$2"
+      duration_set=true
       shift
       ;;
     --duration=*)
       opt_duration="${1#*=}"
+      duration_set=true
       ;;
     --ramp-up)
       [ $# -ge 2 ] || { usage; exit 2; }
@@ -661,10 +677,7 @@ done
 
 case "$profile" in
   box) ;;
-  macos)
-    echo "profile macos is not implemented in H1; it lands with M1" >&2
-    exit 2
-    ;;
+  macos) [ "$duration_set" = true ] || opt_duration=60s ;;
   *)
     echo "unknown profile: $profile" >&2
     usage
@@ -680,6 +693,10 @@ case "$mode" in
     exit 2
     ;;
 esac
+
+if [ "$profile" = macos ] && [ "$command" != smoke ]; then
+  die 'macOS profile supports smoke only'
+fi
 
 case "$opt_vus" in
   ""|*[!0-9]*)
@@ -701,7 +718,7 @@ case "$command" in
   setup) cmd_setup ;;
   box-check) cmd_box_check ;;
   test) cmd_test ;;
-  smoke) cmd_smoke ;;
+  smoke) if [ "$profile" = macos ]; then cmd_macos_smoke; else cmd_smoke; fi ;;
   ceiling) cmd_ceiling ;;
   search|confirm|attribute|report)
     echo "command $command is not implemented yet" >&2
