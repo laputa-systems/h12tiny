@@ -1,0 +1,18 @@
+[package]
+name = "h12tiny-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "h12tiny-twelve"
+path = "src/bin/h12tiny-twelve.rs"
+
+[dependencies]
+app-core = { path = "../app-core" }
+h12tiny = { workspace = true, features = ["server", "web", "http1"] }
+serde_json = { workspace = true }
+signal-hook = { workspace = true }
+smol = { workspace = true }
