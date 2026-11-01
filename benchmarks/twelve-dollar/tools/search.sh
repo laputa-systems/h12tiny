@@ -10,7 +10,14 @@ case "$mode" in nginx) cap=14000 ;; direct) cap=25000 ;; *) echo "unknown mode: 
 mkdir -p "$state/results"
 lock="$state/search-$mode.lock"
 mkdir "$lock" 2>/dev/null || { echo "search: another search may be running ($lock)" >&2; exit 1; }
-trap 'rmdir "$lock" || echo "search: could not remove $lock" >&2' EXIT
+runner_pid=""
+cleanup() {
+  if [ -n "$runner_pid" ]; then kill -TERM "$runner_pid" 2>/dev/null || true; wait "$runner_pid" 2>/dev/null || true; fi
+  rmdir "$lock" || echo "search: could not remove $lock" >&2
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 ceiling_file="$state/ceiling.json"
 [ -f "$ceiling_file" ] || { echo "search: missing measured ceiling $ceiling_file" >&2; exit 1; }
 measured_cap="$(jaq -er --arg mode "$mode" 'select(.status == "complete" and .modes[$mode].status == "complete") | .modes[$mode].ceiling_vus | select(type == "number" and . > 0 and floor == .)' "$ceiling_file")" || { echo "search: no valid measured ceiling for $mode" >&2; exit 1; }
@@ -34,14 +41,19 @@ run_level() {
   fi
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-${mode}-${phase}-${vus}vu-$(jaq 'length' <<< "$runs")"
   run_dir="$state/results/$run_id"
-  if TWELVE_DOLLAR_RUN_ID="$run_id" bash "$bench/run.sh" box smoke --mode "$mode" --vus "$vus" --ramp-up 60s --duration "$duration" --readers "$readers" > "$state/results/$run_id.log" 2>&1; then
+  runs="$(jaq -n --argjson runs "$runs" --arg id "$run_id" --arg phase "$phase" --argjson vus "$vus" '$runs + [{id:$id,phase:$phase,vus:$vus,valid:false,pass:null,status:"running"}]')"
+  save
+  TWELVE_DOLLAR_RUN_ID="$run_id" bash "$bench/run.sh" box smoke --mode "$mode" --vus "$vus" --ramp-up 60s --duration "$duration" --readers "$readers" > "$state/results/$run_id.log" 2>&1 &
+  runner_pid=$!
+  if wait "$runner_pid"; then
     rc=0
   else
     rc=$?
   fi
+  runner_pid=""
   if [ ! -f "$run_dir/summary.json" ]; then
     echo "search: no summary for $run_id (exit $rc); see $state/results/$run_id.log" >&2
-    runs="$(jaq -n --argjson runs "$runs" --arg id "$run_id" --arg phase "$phase" --argjson vus "$vus" '$runs + [{id:$id,phase:$phase,vus:$vus,valid:false,pass:null}]')"
+    runs="$(jaq '.[-1].status = "invalid"' <<< "$runs")"
     status=deferred
     save
     return 2
@@ -49,16 +61,31 @@ run_level() {
   summary="$run_dir/summary.json"
   if [ "$(jaq -r '.valid' "$summary")" != true ]; then
     echo "search: invalid run $run_id; see $summary" >&2
-    runs="$(jaq -n --argjson runs "$runs" --arg id "$run_id" --arg phase "$phase" --argjson vus "$vus" '$runs + [{id:$id,phase:$phase,vus:$vus,valid:false,pass:null}]')"
+    runs="$(jaq '.[-1].status = "invalid"' <<< "$runs")"
     status=deferred
     save
     return 2
   fi
   run_pass=false
   if [ "$(jaq -r '.k6.exit_code' "$summary")" = 0 ]; then run_pass=true; fi
-  runs="$(jaq -n --argjson runs "$runs" --arg id "$run_id" --arg phase "$phase" --argjson vus "$vus" --argjson pass "$run_pass" '$runs + [{id:$id,phase:$phase,vus:$vus,valid:true,pass:$pass}]')"
+  runs="$(jaq --argjson pass "$run_pass" '.[-1] |= (.valid = true | .pass = $pass | .status = "complete")' <<< "$runs")"
   save
   echo "== $phase $mode $vus VUs: pass=$run_pass ($run_dir)"
+}
+
+recover_runs() {
+  local index id summary result
+  for index in $(jaq -r 'to_entries[] | select(.value.status == "running") | .key' <<< "$runs"); do
+    id="$(jaq -r ".[$index].id" <<< "$runs")"
+    summary="$state/results/$id/summary.json"
+    if [ -f "$summary" ] && jaq -e '.valid == true and (.k6.exit_code == 0 or .k6.exit_code == 99)' "$summary" >/dev/null 2>&1; then
+      result=false
+      if [ "$(jaq -r '.k6.exit_code' "$summary")" = 0 ]; then result=true; fi
+      runs="$(jaq --argjson index "$index" --argjson pass "$result" '.[$index] |= (.valid = true | .pass = $pass | .status = "complete")' <<< "$runs")"
+    else
+      runs="$(jaq --argjson index "$index" '.[$index].status = "interrupted"' <<< "$runs")"
+    fi
+  done
 }
 
 if [ "$action" = search ]; then
@@ -67,6 +94,7 @@ if [ "$action" = search ]; then
     [ "$(jaq -r '.stage' "$search_file")" = search ] && [ "$(jaq -r '.status' "$search_file")" != searched ] || { echo "search: existing completed or confirming search in $search_file" >&2; exit 1; }
     [ "$(jaq -r '.readers' "$search_file")" = "$readers" ] && [ "$(jaq -r '.cap' "$search_file")" = "$cap" ] && [ "$(jaq -r '.revision' "$search_file")" = "$revision" ] || { echo 'search: revision, reader count, or ceiling changed' >&2; exit 1; }
     runs="$(jaq -c '.runs' "$search_file")"
+    recover_runs
   else
     runs='[]'
     jaq -n --arg mode "$mode" --argjson cap "$cap" --argjson readers "$readers" --arg revision "$revision" '{mode:$mode,cap:$cap,readers:$readers,revision:$revision,runs:[],low:0,high:null,modified:false,status:"searching",stage:"search",score:null}' > "$search_file.tmp"
@@ -127,6 +155,7 @@ elif [ "$action" = confirm ]; then
   [ "$(jaq -r '.cap' "$search_file")" = "$cap" ] || { echo 'search: measured ceiling differs from the search' >&2; exit 1; }
   [ "$(jaq -r '.revision' "$search_file")" = "$revision" ] || { echo 'search: revision differs from the search' >&2; exit 1; }
   runs="$(jaq -c '.runs' "$search_file")"
+  recover_runs
   low="$(jaq -r '.low' "$search_file")"
   high="$(jaq -r '.high // empty' "$search_file")"
   modified="$(jaq -r '.modified' "$search_file")"
