@@ -1660,7 +1660,8 @@ impl proto::Peer for Peer {
     ) -> Result<Self::Poll, Error> {
         use http::{uri, Version};
 
-        let mut b = Request::builder();
+        let mut request = Request::new(());
+        *request.version_mut() = Version::HTTP_2;
 
         macro_rules! malformed {
             ($($arg:tt)*) => {{
@@ -1669,12 +1670,10 @@ impl proto::Peer for Peer {
             }}
         }
 
-        b = b.version(Version::HTTP_2);
-
         let is_connect;
         if let Some(method) = pseudo.method {
             is_connect = method == Method::CONNECT;
-            b = b.method(method);
+            *request.method_mut() = method;
         } else {
             malformed!("malformed headers: missing method");
         }
@@ -1683,7 +1682,9 @@ impl proto::Peer for Peer {
         if has_protocol {
             if is_connect {
                 // Assert that we have the right type.
-                b = b.extension::<crate::ext::Protocol>(pseudo.protocol.unwrap());
+                request
+                    .extensions_mut()
+                    .insert(pseudo.protocol.unwrap());
             } else {
                 malformed!("malformed headers: :protocol on non-CONNECT request");
             }
@@ -1751,13 +1752,9 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: missing path in extended CONNECT");
         }
 
-        b = b.uri(parts);
-
-        let mut request = match b.body(()) {
-            Ok(request) => request,
+        *request.uri_mut() = match http::Uri::from_parts(parts) {
+            Ok(uri) => uri,
             Err(e) => {
-                // TODO: Should there be more specialized handling for different
-                // kinds of errors
                 proto_err!(stream: "error building request: {}; stream={:?}", e, stream_id);
                 return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
             }
