@@ -282,8 +282,9 @@ impl Http1Transaction for Server {
                         return Err(Parse::transfer_encoding_unexpected());
                     }
                     is_te = true;
-                    if is_cl && con_len.take().is_some() {
-                        headers.remove(header::CONTENT_LENGTH);
+                    if is_cl {
+                        debug!("request has both Content-Length and Transfer-Encoding");
+                        return Err(Parse::content_length_invalid());
                     }
                     if headers::is_chunked_(&value) {
                         is_te_chunked = true;
@@ -295,20 +296,14 @@ impl Http1Transaction for Server {
                 header::CONTENT_LENGTH => {
                     is_cl = true;
                     if is_te {
-                        continue;
+                        debug!("request has both Transfer-Encoding and Content-Length");
+                        return Err(Parse::content_length_invalid());
                     }
                     let len = headers::content_length_parse(&value)
                         .ok_or_else(Parse::content_length_invalid)?;
-                    if let Some(prev) = con_len {
-                        if prev != len {
-                            debug!(
-                                "multiple Content-Length headers with different values: [{}, {}]",
-                                prev, len,
-                            );
-                            return Err(Parse::content_length_invalid());
-                        }
-                        // we don't need to append this secondary length
-                        continue;
+                    if con_len.is_some() {
+                        debug!("request has multiple Content-Length headers");
+                        return Err(Parse::content_length_invalid());
                     }
                     decoder = DecodedLength::checked_new(len)?;
                     con_len = Some(len);
@@ -354,10 +349,6 @@ impl Http1Transaction for Server {
         if is_te && !is_te_chunked {
             debug!("request with transfer-encoding header, but not chunked, bad request");
             return Err(Parse::transfer_encoding_invalid());
-        }
-
-        if is_te && is_cl {
-            keep_alive = false;
         }
 
         let mut extensions = http::Extensions::default();
@@ -1778,6 +1769,79 @@ mod tests {
         Server::parse(&mut raw, ctx).unwrap_err();
     }
 
+    #[cfg(feature = "server")]
+    fn parse_server_request(raw: &str) -> crate::Result<Option<ParsedMessage<RequestLine>>> {
+        let mut raw = BytesMut::from(raw);
+        let mut method = None;
+        let mut cached_headers = None;
+        let parsed = Server::parse(
+            &mut raw,
+            ParseContext {
+                cached_headers: &mut cached_headers,
+                req_method: &mut method,
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h1_max_header_size: None,
+                preserve_header_case: false,
+                #[cfg(feature = "ffi")]
+                preserve_header_order: false,
+                h09_responses: false,
+                #[cfg(feature = "client")]
+                on_informational: &mut None,
+            },
+        );
+        parsed.map_err(Into::into)
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn test_parse_request_rejects_content_length_with_transfer_encoding() {
+        for raw in [
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n0\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nContent-Length: 0\r\nTransfer-Encoding: gzip\r\n\r\n",
+        ] {
+            let err = parse_server_request(raw).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid content-length"),
+                "unexpected error for {raw:?}: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn test_parse_request_rejects_duplicate_content_length() {
+        for raw in [
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\ntest",
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\ntest",
+        ] {
+            let err = parse_server_request(raw).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid content-length"),
+                "unexpected error for {raw:?}: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn test_parse_request_accepts_single_framing_header() {
+        let fixed = parse_server_request(
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nContent-Length: 4\r\n\r\ntest",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(fixed.decode, DecodedLength::new(4));
+
+        let chunked = parse_server_request(
+            "POST / HTTP/1.1\r\nHost: hyper.rs\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(chunked.decode, DecodedLength::CHUNKED);
+    }
+
     const H09_RESPONSE: &str = "Baguettes are super delicious, don't you agree?";
 
     #[test]
@@ -2092,32 +2156,28 @@ mod tests {
             DecodedLength::new(10)
         );
 
-        // transfer-encoding and content-length = chunked
-        let msg = parse(
+        // transfer-encoding and content-length is ambiguous framing
+        parse_err(
             "\
              POST / HTTP/1.1\r\n\
              content-length: 10\r\n\
              transfer-encoding: chunked\r\n\
              \r\n\
              ",
+            "content-length and transfer-encoding",
         );
-        assert_eq!(msg.decode, DecodedLength::CHUNKED);
-        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
-        assert!(!msg.keep_alive);
 
-        let msg = parse(
+        parse_err(
             "\
              POST / HTTP/1.1\r\n\
              transfer-encoding: chunked\r\n\
              content-length: 10\r\n\
              \r\n\
              ",
+            "transfer-encoding and content-length",
         );
-        assert_eq!(msg.decode, DecodedLength::CHUNKED);
-        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
-        assert!(!msg.keep_alive);
 
-        let msg = parse(
+        parse_err(
             "\
              POST / HTTP/1.1\r\n\
              transfer-encoding: gzip\r\n\
@@ -2125,12 +2185,10 @@ mod tests {
              transfer-encoding: chunked\r\n\
              \r\n\
              ",
+            "transfer-encoding and content-length",
         );
-        assert_eq!(msg.decode, DecodedLength::CHUNKED);
-        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
-        assert!(!msg.keep_alive);
 
-        let msg = parse(
+        parse_err(
             "\
              POST / HTTP/1.1\r\n\
              connection: keep-alive\r\n\
@@ -2138,23 +2196,18 @@ mod tests {
              transfer-encoding: chunked\r\n\
              \r\n\
              ",
+            "content-length and transfer-encoding",
         );
-        assert_eq!(msg.decode, DecodedLength::CHUNKED);
-        assert!(!msg.head.headers.contains_key(header::CONTENT_LENGTH));
-        assert!(!msg.keep_alive);
 
-        // multiple content-lengths of same value are fine
-        assert_eq!(
-            parse(
-                "\
-                 POST / HTTP/1.1\r\n\
-                 content-length: 10\r\n\
-                 content-length: 10\r\n\
-                 \r\n\
-                 "
-            )
-            .decode,
-            DecodedLength::new(10)
+        // duplicate content-length is ambiguous framing
+        parse_err(
+            "\
+             POST / HTTP/1.1\r\n\
+             content-length: 10\r\n\
+             content-length: 10\r\n\
+             \r\n\
+             ",
+            "duplicate content-lengths",
         );
 
         // multiple content-lengths with different values is an error

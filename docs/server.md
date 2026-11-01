@@ -11,6 +11,12 @@ prior-knowledge preface. A complete match selects H2. A mismatch selects H1
 and replays every byte already consumed, including when the request line
 diverges early. This is not HTTP/1.1 `Upgrade: h2c` support.
 
+HTTP/1.1 requests with duplicate or conflicting `Content-Length` fields, or
+with both `Content-Length` and `Transfer-Encoding`, are rejected with a parse
+error before the service is invoked. This is stricter than upstream Hyper,
+which treats `Transfer-Encoding` as authoritative and closes the connection;
+the stricter rule prevents a peer from choosing a different framing.
+
 For TLS, the caller supplies a Rustls acceptor and server configuration. When
 both protocols are enabled, advertise `h2` and `http/1.1`. Negotiated `h2`
 selects H2; `http/1.1` or no ALPN selects H1 when H1 is compiled. Unknown or
