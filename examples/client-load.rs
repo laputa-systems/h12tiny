@@ -122,7 +122,8 @@ impl Drop for InFlight {
 
 fn usage() -> &'static str {
     "usage: cargo run --release --example client-load -- URI [--requests N] [--concurrency N] [--http2] [--debug-events]\n\n\
-URI should end in /0, /1k, or /64k when body-size validation is desired.\n\
+URI should end in /0, /1k, /64k, /1m, or /headers when body-size
+validation is desired.\n\
 HTTPS uses the system web PKI; the committed localhost fixture is intended\n\
 for the server-side curl/nghttp checks, not for this default client policy.\n\n\
 --debug-events retains endpoint lifecycle observations and is intended for\n\
@@ -192,6 +193,8 @@ fn expected_body_len(uri: &Uri) -> Option<usize> {
         "/0" => Some(0),
         "/1k" => Some(1024),
         "/64k" => Some(64 * 1024),
+        "/1m" => Some(1024 * 1024),
+        "/headers" => Some(0),
         _ => None,
     }
 }

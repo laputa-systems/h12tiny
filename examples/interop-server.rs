@@ -2,7 +2,8 @@
 //! harnesses.
 //!
 //! The endpoint body is selected only by the path:
-//! `/0` is empty, `/1k` is 1 KiB, and `/64k` is 64 KiB.  The TLS listener
+//! `/0` is empty, `/1k` is 1 KiB, `/64k` is 64 KiB, and `/1m` is 1 MiB;
+//! `/headers` returns a larger repeated header set.  The TLS listener
 //! uses the committed localhost fixture and advertises both `h2` and
 //! `http/1.1` through ALPN.  This is intentionally a low-level example, not
 //! a general-purpose HTTP server or router.
@@ -94,7 +95,7 @@ struct Options {
 fn usage() -> &'static str {
     "usage: cargo run --example interop-server -- [--plain ADDR] [--tls ADDR]\n\n\
 defaults: --plain 127.0.0.1:3000 --tls 127.0.0.1:3443\n\
-endpoints: /0, /1k, /64k"
+endpoints: /0, /1k, /64k, /1m, /headers"
 }
 
 fn options() -> Result<Options, String> {

@@ -121,12 +121,7 @@ impl Headers {
         Headers {
             stream_id,
             stream_dep: None,
-            header_block: HeaderBlock {
-                field_size: calculate_headermap_size(&fields),
-                fields,
-                is_over_size: false,
-                pseudo,
-            },
+            header_block: HeaderBlock::outgoing(fields, pseudo),
             flags: HeadersFlag::default(),
         }
     }
@@ -138,12 +133,7 @@ impl Headers {
         Headers {
             stream_id,
             stream_dep: None,
-            header_block: HeaderBlock {
-                field_size: calculate_headermap_size(&fields),
-                fields,
-                is_over_size: false,
-                pseudo: Pseudo::default(),
-            },
+            header_block: HeaderBlock::outgoing(fields, Pseudo::default()),
             flags,
         }
     }
@@ -363,12 +353,7 @@ impl PushPromise {
     ) -> Self {
         PushPromise {
             flags: PushPromiseFlag::default(),
-            header_block: HeaderBlock {
-                field_size: calculate_headermap_size(&fields),
-                fields,
-                is_over_size: false,
-                pseudo,
-            },
+            header_block: HeaderBlock::outgoing(fields, pseudo),
             promised_id,
             stream_id,
         }
@@ -859,6 +844,15 @@ impl fmt::Debug for PushPromiseFlag {
 // ===== HeaderBlock =====
 
 impl HeaderBlock {
+    fn outgoing(fields: HeaderMap, pseudo: Pseudo) -> Self {
+        HeaderBlock {
+            fields,
+            field_size: 0,
+            is_over_size: false,
+            pseudo,
+        }
+    }
+
     fn load(
         &mut self,
         src: &mut BytesMut,
@@ -1027,12 +1021,6 @@ impl HeaderBlock {
             + pseudo_size!(path)
             + self.field_size
     }
-}
-
-fn calculate_headermap_size(map: &HeaderMap) -> usize {
-    map.iter()
-        .map(|(name, value)| decoded_header_size(name.as_str().len(), value.len()))
-        .sum::<usize>()
 }
 
 fn decoded_header_size(name: usize, value: usize) -> usize {
