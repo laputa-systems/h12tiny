@@ -247,13 +247,13 @@ impl<T: Poolable, K: Key> Pool<T, K> {
                     inner.waiters.remove(&key);
                 }
                 if sender.is_none() {
-                    let now = inner.now();
+                    let idle_at = inner.timeout.map(|_| inner.now());
                     let max_idle = inner.max_idle_per_host;
                     let list = inner.idle.entry(key).or_default();
                     if list.len() >= max_idle {
                         return Err(value);
                     }
-                    list.push(Idle { value, idle_at: now });
+                    list.push(Idle { value, idle_at });
                     inner.spawn_idle_interval(pool);
                     return Ok(());
                 }
@@ -385,7 +385,7 @@ struct Connection<T, K: Key> {
 
 struct Idle<T, K: Key> {
     value: Connection<T, K>,
-    idle_at: Instant,
+    idle_at: Option<Instant>,
 }
 
 struct IdlePopper<'a, T, K: Key> {
@@ -397,7 +397,7 @@ impl<T: Poolable, K: Key> IdlePopper<'_, T, K> {
     fn pop(
         self,
         expiration: Expiration,
-        now: Instant,
+        now: Option<Instant>,
         debug_events: Option<&DebugEventLog>,
         discarded: &mut Vec<Connection<T, K>>,
     ) -> Option<Idle<T, K>> {
@@ -415,7 +415,7 @@ impl<T: Poolable, K: Key> IdlePopper<'_, T, K> {
                 #[cfg(feature = "http2")]
                 Reservation::Shared(to_reinsert, to_checkout) => {
                     self.list.push(Idle {
-                        idle_at: now,
+                        idle_at: now.or(entry.idle_at),
                         value: Connection { value: to_reinsert, h1_slot: None },
                     });
                     to_checkout
@@ -501,7 +501,9 @@ impl<T: Poolable, K: Key> Inner<T, K> {
             for index in (0..entries.len()).rev() {
                 let entry = &entries[index];
                 if !entry.value.value.is_open()
-                    || now.saturating_duration_since(entry.idle_at) > timeout
+                    || entry
+                        .idle_at
+                        .is_some_and(|idle_at| now.saturating_duration_since(idle_at) > timeout)
                 {
                     if let Some(events) = &debug_events {
                         events.record(DebugEvent::PoolEvicted { origin: key.origin() });
@@ -712,7 +714,7 @@ impl<T: Poolable, K: Key> Checkout<T, K> {
         let entry = {
             let inner = self.pool.inner.as_ref()?;
             let mut inner = lock_pool(inner);
-            let now = inner.now();
+            let now = inner.timeout.map(|_| inner.now());
             let expiration = Expiration(inner.timeout);
             let debug_events = inner.debug_events.clone();
             let maybe_entry = inner.idle.get_mut(&self.key).and_then(|entries| {
@@ -820,10 +822,13 @@ impl<T: Poolable, K: Key> Drop for Connecting<T, K> {
 struct Expiration(Option<Duration>);
 
 impl Expiration {
-    fn expires(self, idle_at: Instant, now: Instant) -> bool {
-        self.0
-            .map(|timeout| now.saturating_duration_since(idle_at) > timeout)
-            .unwrap_or(false)
+    fn expires(self, idle_at: Option<Instant>, now: Option<Instant>) -> bool {
+        match (self.0, idle_at, now) {
+            (Some(timeout), Some(idle_at), Some(now)) => {
+                now.saturating_duration_since(idle_at) > timeout
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1401,8 +1406,12 @@ mod slot_regressions {
         let key = "origin".to_owned();
         let owner = pool.connecting(&key, Protocol::Http1).unwrap();
         drop(pool.pooled(owner, socket()));
-        pool.inner.as_ref().unwrap().lock().unwrap().idle.get_mut(&key).unwrap()[0]
-            .idle_at -= Duration::from_secs(2);
+        let mut inner = pool.inner.as_ref().unwrap().lock().unwrap();
+        *inner.idle.get_mut(&key).unwrap()[0]
+            .idle_at
+            .as_mut()
+            .unwrap() -= Duration::from_secs(2);
+        drop(inner);
         let mut checkout = pool.checkout(key.clone());
         assert!(poll(&mut checkout).is_pending());
         assert!(pool.connecting(&key, Protocol::Http1).is_some(), "expired idle socket leaked its H1 slot");
@@ -1415,7 +1424,10 @@ mod slot_regressions {
         drop(pool.pooled(owner, socket()));
         let discarded = {
             let mut inner = pool.inner.as_ref().unwrap().lock().unwrap();
-            inner.idle.get_mut(&key).unwrap()[0].idle_at -= Duration::from_secs(2);
+            *inner.idle.get_mut(&key).unwrap()[0]
+                .idle_at
+                .as_mut()
+                .unwrap() -= Duration::from_secs(2);
             inner.clear_expired()
         };
         drop(discarded);
@@ -1587,8 +1599,12 @@ mod slot_regressions {
         let key = "origin".to_owned();
         let owner = pool.connecting(&key, Protocol::Http1).unwrap();
         drop(pool.pooled(owner, socket()));
-        pool.inner.as_ref().unwrap().lock().unwrap().idle.get_mut(&key).unwrap()[0]
-            .idle_at -= Duration::from_secs(2);
+        let mut inner = pool.inner.as_ref().unwrap().lock().unwrap();
+        *inner.idle.get_mut(&key).unwrap()[0]
+            .idle_at
+            .as_mut()
+            .unwrap() -= Duration::from_secs(2);
+        drop(inner);
         let probe = Arc::new(LockProbe { pool: pool.clone(), wakes: AtomicUsize::new(0) });
         let waker = probe.clone().into();
         let mut checkout = pool.checkout(key.clone());
