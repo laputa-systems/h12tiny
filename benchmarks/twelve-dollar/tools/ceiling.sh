@@ -158,7 +158,7 @@ copy_harness() {
 
 shutdown_line() {
   local box_run="$1"
-  docker exec "$BOX" sh -c "grep '^h12tiny-static shutdown ' '$box_run/app.log' | tail -1" 2>/dev/null || true
+  docker exec "$BOX" awk '/^h12tiny-static shutdown / { line = $0 } END { print line }' "$box_run/app.log" 2>/dev/null || true
 }
 
 field_value() {
@@ -527,6 +527,9 @@ run_probe() {
   add_invalid() {
     invalid="$(jaq -n --argjson current "$invalid" --arg reason "$1" '$current + [$reason]')"
   }
+  if ! jaq -se 'length > 0 and all(.[]; (.CPUPerc | type == "string" and test("^[0-9.]+%$")) and (.MemPerc | type == "string" and test("^[0-9.]+%$")) and (.MemUsage | type == "string" and test("^[0-9.]+(B|KiB|MiB|GiB|TiB) /")))' "$dir/k6-stats.log" >/dev/null 2>&1; then
+    add_invalid "k6 resource samples are missing or malformed"
+  fi
   if [ "$k6_rc" -ne 0 ]; then
     add_invalid "k6 exited with status $k6_rc"
   fi
@@ -627,7 +630,7 @@ run_probe() {
 
 probe_level() {
   local mode="$1" vus="$2" name="$3"
-  local attempt dir valid gate_after saturated rc
+  local attempt dir valid gate_after rc
   for attempt in $(seq 1 "$GATE_ATTEMPTS"); do
     set +e
     dir="$(run_probe "$mode" "$vus" "$name-a$attempt")"
@@ -645,12 +648,7 @@ probe_level() {
       return 0
     fi
     gate_after="$(jaq -r '.gate.after' "$dir/probe.json")"
-    saturated="$(jaq -r '.saturated' "$dir/probe.json")"
     echo "ceiling: probe $dir is not valid: $(jaq -r '.invalid_reasons | join("; ")' "$dir/probe.json")" >&2
-    if [ "$saturated" = true ] && [ "$gate_after" = true ]; then
-      printf '%s\n' "$dir"
-      return 0
-    fi
     if [ "$gate_after" = true ]; then
       return 2
     fi
