@@ -24,6 +24,7 @@ while [ $# -gt 0 ]; do
 done
 state="$(cd "$(dirname "$0")/../state" && pwd)"
 if [ "${SIM_HANG:-false}" = true ]; then printf '%s\n' "$$" > "$state/../hang.pid"; exec sleep 120; fi
+if [ "${SIM_GATE:-false}" = true ]; then exit 75; fi
 dir="$state/results/$TWELVE_DOLLAR_RUN_ID"
 mkdir -p "$dir"
 exit_code=0
@@ -37,6 +38,10 @@ printf '{"valid":%s,"k6":{"exit_code":%s}}\n' "$valid" "$exit_code" > "$dir/summ
 printf '%s\n' "$vus VUs" > "$dir/report.md"
 [ "$exit_code" = 0 ]
 RUNNER
+mkdir -p "$test_dir/gate-state"
+cp "$test_dir/state/ceiling.json" "$test_dir/gate-state/ceiling.json"
+if SIM_GATE=true bash "$root/benchmarks/twelve-dollar/tools/search.sh" search nginx "$test_dir/bench" "$test_dir/gate-state" 2 >/dev/null 2>&1; then exit 1; fi
+jaq -e '.status == "deferred" and .stage == "search" and (.runs | length) == 0' "$test_dir/gate-state/search-nginx.json" >/dev/null
 bash "$root/benchmarks/twelve-dollar/tools/search.sh" search nginx "$test_dir/bench" "$test_dir/state" 2 >/dev/null
 jaq -e '.status == "searched" and .low >= 4750 and .low < 5000 and .high == 5000 and .modified == false' "$test_dir/state/search-nginx.json" >/dev/null
 bash "$root/benchmarks/twelve-dollar/tools/search.sh" confirm nginx "$test_dir/bench" "$test_dir/state" 2 >/dev/null

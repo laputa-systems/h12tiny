@@ -53,7 +53,11 @@ run_level() {
   runner_pid=""
   if [ ! -f "$run_dir/summary.json" ]; then
     echo "search: no summary for $run_id (exit $rc); see $state/results/$run_id.log" >&2
-    runs="$(jaq '.[-1].status = "invalid"' <<< "$runs")"
+    if [ "$rc" -eq 75 ]; then
+      runs="$(jaq '.[:-1]' <<< "$runs")"
+    else
+      runs="$(jaq '.[-1].status = "invalid"' <<< "$runs")"
+    fi
     status=deferred
     save
     return 2
