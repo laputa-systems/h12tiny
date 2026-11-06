@@ -48,7 +48,7 @@ impl fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, deser::Serialize)]
 pub struct ErrorResponse {
     pub error: String,
 }

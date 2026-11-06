@@ -33,8 +33,8 @@ impl Response {
         std::str::from_utf8(&self.body).unwrap_or("<non-utf8 body>")
     }
 
-    fn json(&self) -> serde_json::Value {
-        serde_json::from_slice(&self.body)
+    fn json(&self) -> deser_value::Value {
+        deser_json::from_slice(&self.body)
             .unwrap_or_else(|error| panic!("invalid JSON response ({error}): {:?}", self.text()))
     }
 }
@@ -486,10 +486,10 @@ fn seed_tokens() -> &'static [SeedToken] {
         let path = challenge_dir().join("seed").join("tokens.json");
         let text = fs::read(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        let value: serde_json::Value =
-            serde_json::from_slice(&text).unwrap_or_else(|error| panic!("parse tokens.json: {error}"));
+        let value: deser_value::Value =
+            deser_json::from_slice(&text).unwrap_or_else(|error| panic!("parse tokens.json: {error}"));
         value
-            .as_array()
+            .as_seq()
             .expect("tokens.json is an array")
             .iter()
             .map(|entry| SeedToken {
@@ -519,36 +519,36 @@ fn sign_parts(header: &str, payload: &str, secret: &[u8]) -> String {
     format!("{header}.{payload}.{}", URL_SAFE_NO_PAD.encode(signature))
 }
 
-fn sign_payload(payload: &serde_json::Value) -> String {
+fn sign_payload(payload: &deser_value::Value) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
     let payload =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).expect("serialize token payload"));
+        URL_SAFE_NO_PAD.encode(deser_json::to_string(payload).map(String::into_bytes).expect("serialize token payload"));
     sign_parts(&header, &payload, JWT_SECRET.as_bytes())
 }
 
-fn sign_payload_with_secret(payload: &serde_json::Value, secret: &[u8]) -> String {
+fn sign_payload_with_secret(payload: &deser_value::Value, secret: &[u8]) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
     let payload =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).expect("serialize token payload"));
+        URL_SAFE_NO_PAD.encode(deser_json::to_string(payload).map(String::into_bytes).expect("serialize token payload"));
     sign_parts(&header, &payload, secret)
 }
 
-fn sign_alg_none(payload: &serde_json::Value) -> String {
+fn sign_alg_none(payload: &deser_value::Value) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
     let payload =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).expect("serialize token payload"));
+        URL_SAFE_NO_PAD.encode(deser_json::to_string(payload).map(String::into_bytes).expect("serialize token payload"));
     format!("{header}.{payload}.")
 }
 
 fn post_json(body: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "body": body })).expect("serialize request body")
+    deser_json::to_string(&deser_value::value!({ "body": body })).map(String::into_bytes).expect("serialize request body")
 }
 
 fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
 
-fn create_post(client: &mut Client, token: &str, body: &str) -> serde_json::Value {
+fn create_post(client: &mut Client, token: &str, body: &str) -> deser_value::Value {
     let authorization = bearer(token);
     let body = post_json(body);
     let response = client
@@ -687,7 +687,7 @@ fn keep_alive_reuses_one_connection() {
             .request("GET", "/feed", &[], None)
             .expect("feed on the shared connection");
         assert_eq!(feed.status, 200);
-        assert_eq!(feed.json()["posts"].as_array().expect("feed posts").len(), 20);
+        assert_eq!(feed.json()["posts"].as_seq().expect("feed posts").len(), 20);
 
         let body = format!("keep alive {index}");
         let created = create_post(&mut client, &tokens[index].token, &body);
@@ -871,7 +871,7 @@ fn slow_headers_within_bound_get_response() {
         .expect("slow header response");
     assert_eq!(response.status, 200, "body: {}", response.text());
     assert_eq!(
-        response.json()["posts"].as_array().expect("feed posts").len(),
+        response.json()["posts"].as_seq().expect("feed posts").len(),
         20
     );
 }
@@ -1050,7 +1050,7 @@ fn concurrent_writes_and_duplicate_likes() {
 
     let feed = client.request("GET", "/feed", &[], None).expect("feed");
     assert_eq!(feed.status, 200);
-    let posts = feed.json()["posts"].as_array().expect("feed posts").clone();
+    let posts = feed.json()["posts"].as_seq().expect("feed posts").clone();
     assert_eq!(posts.len(), 20);
     let visible = posts
         .iter()
@@ -1112,9 +1112,9 @@ fn invalid_and_expired_tokens_use_spec_messages() {
         "invalid or expired token",
     );
 
-    let expired = sign_payload(&serde_json::json!({
-        "sub": valid.username,
-        "username": valid.username,
+    let expired = sign_payload(&deser_value::value!({
+        "sub": valid.username.clone(),
+        "username": valid.username.clone(),
         "iat": now - 7200,
         "exp": now - 3600,
     }));
@@ -1130,9 +1130,9 @@ fn invalid_and_expired_tokens_use_spec_messages() {
     );
 
     let bad_signature = sign_payload_with_secret(
-        &serde_json::json!({
+        &deser_value::value!({
             "sub": "1",
-            "username": valid.username,
+            "username": valid.username.clone(),
             "iat": now,
             "exp": now + 3600,
         }),
@@ -1149,9 +1149,9 @@ fn invalid_and_expired_tokens_use_spec_messages() {
         "invalid or expired token",
     );
 
-    let none = sign_alg_none(&serde_json::json!({
+    let none = sign_alg_none(&deser_value::value!({
         "sub": "1",
-        "username": valid.username,
+        "username": valid.username.clone(),
         "iat": now,
         "exp": now + 3600,
     }));
@@ -1166,9 +1166,9 @@ fn invalid_and_expired_tokens_use_spec_messages() {
         "invalid or expired token",
     );
 
-    let bad_sub = sign_payload(&serde_json::json!({
+    let bad_sub = sign_payload(&deser_value::value!({
         "sub": "abc",
-        "username": valid.username,
+        "username": valid.username.clone(),
         "iat": now,
         "exp": now + 3600,
     }));
@@ -1183,9 +1183,9 @@ fn invalid_and_expired_tokens_use_spec_messages() {
         "invalid token payload",
     );
 
-    let zero_sub = sign_payload(&serde_json::json!({
+    let zero_sub = sign_payload(&deser_value::value!({
         "sub": "0",
-        "username": valid.username,
+        "username": valid.username.clone(),
         "iat": now,
         "exp": now + 3600,
     }));
@@ -1200,7 +1200,7 @@ fn invalid_and_expired_tokens_use_spec_messages() {
         "invalid token payload",
     );
 
-    let no_username = sign_payload(&serde_json::json!({
+    let no_username = sign_payload(&deser_value::value!({
         "sub": "1",
         "iat": now,
         "exp": now + 3600,
@@ -1216,7 +1216,7 @@ fn invalid_and_expired_tokens_use_spec_messages() {
         "invalid token payload",
     );
 
-    let numeric_username = sign_payload(&serde_json::json!({
+    let numeric_username = sign_payload(&deser_value::value!({
         "sub": "1",
         "username": 7,
         "iat": now,

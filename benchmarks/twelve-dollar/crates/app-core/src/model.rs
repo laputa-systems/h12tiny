@@ -1,4 +1,4 @@
-use serde::Serialize;
+use deser::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Post {

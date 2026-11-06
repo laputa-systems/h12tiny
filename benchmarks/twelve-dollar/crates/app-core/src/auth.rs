@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
-use serde_json::Value;
+use deser_value::Value;
 use sha2::Sha256;
 
 use crate::AppError;
@@ -34,8 +34,8 @@ fn verify_token(token: &str, secret: &[u8]) -> Result<Identity, AppError> {
         .decode(header)
         .map_err(|_| AppError::InvalidToken)?;
     let header_value: Value =
-        serde_json::from_slice(&header_bytes).map_err(|_| AppError::InvalidToken)?;
-    if header_value.get("alg").and_then(Value::as_str) != Some("HS256") {
+        deser_json::from_slice(&header_bytes).map_err(|_| AppError::InvalidToken)?;
+    if header_value.get("alg").and_then(|value| value.as_str()) != Some("HS256") {
         return Err(AppError::InvalidToken);
     }
 
@@ -54,7 +54,7 @@ fn verify_token(token: &str, secret: &[u8]) -> Result<Identity, AppError> {
         .decode(payload)
         .map_err(|_| AppError::InvalidToken)?;
     let payload_value: Value =
-        serde_json::from_slice(&payload_bytes).map_err(|_| AppError::InvalidToken)?;
+        deser_json::from_slice(&payload_bytes).map_err(|_| AppError::InvalidToken)?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -62,7 +62,7 @@ fn verify_token(token: &str, secret: &[u8]) -> Result<Identity, AppError> {
         .as_secs_f64();
     let expires_at = payload_value
         .get("exp")
-        .and_then(Value::as_f64)
+        .and_then(|value| value.as_f64())
         .ok_or(AppError::InvalidToken)?;
     if expires_at <= now {
         return Err(AppError::InvalidToken);
@@ -70,7 +70,7 @@ fn verify_token(token: &str, secret: &[u8]) -> Result<Identity, AppError> {
 
     let sub = payload_value
         .get("sub")
-        .and_then(Value::as_str)
+        .and_then(|value| value.as_str())
         .ok_or(AppError::InvalidTokenPayload)?;
     if sub.is_empty() || !sub.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(AppError::InvalidTokenPayload);
@@ -81,7 +81,7 @@ fn verify_token(token: &str, secret: &[u8]) -> Result<Identity, AppError> {
     }
     let username = payload_value
         .get("username")
-        .and_then(Value::as_str)
+        .and_then(|value| value.as_str())
         .ok_or(AppError::InvalidTokenPayload)?
         .to_owned();
 

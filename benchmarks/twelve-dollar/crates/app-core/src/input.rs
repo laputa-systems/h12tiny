@@ -14,11 +14,11 @@ pub fn parse_post_id(raw: &str) -> Result<i64, AppError> {
 }
 
 pub fn parse_create_body(bytes: &[u8]) -> Result<String, AppError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| AppError::MalformedJsonBody)?;
+    let value: deser_value::Value =
+        deser_json::from_slice(bytes).map_err(|_| AppError::MalformedJsonBody)?;
     let body = value
         .get("body")
-        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.as_str())
         .ok_or(AppError::BodyRequired)?;
     Ok(validate_body(body)?.to_owned())
 }

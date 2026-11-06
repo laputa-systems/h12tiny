@@ -275,18 +275,18 @@ fn serializes_posts_and_responses_compactly_in_spec_order() {
         like_count: 2,
     };
     assert_eq!(
-        serde_json::to_string(&PostResponse { post: post.clone() }).unwrap(),
+        deser_json::to_string(&PostResponse { post: post.clone() }).unwrap(),
         r#"{"post":{"id":7,"body":"hi","created_at":"2025-01-01T00:00:00.000Z","author":"alice","like_count":2}}"#
     );
     assert_eq!(
-        serde_json::to_string(&FeedResponse {
+        deser_json::to_string(&FeedResponse {
             posts: vec![post.clone()]
         })
         .unwrap(),
         r#"{"posts":[{"id":7,"body":"hi","created_at":"2025-01-01T00:00:00.000Z","author":"alice","like_count":2}]}"#
     );
     assert_eq!(
-        serde_json::to_string(&LikeResponse {
+        deser_json::to_string(&LikeResponse {
             liked: true,
             already_liked: false,
             post_id: 7
@@ -295,11 +295,11 @@ fn serializes_posts_and_responses_compactly_in_spec_order() {
         r#"{"liked":true,"already_liked":false,"post_id":7}"#
     );
     assert_eq!(
-        serde_json::to_string(&HealthOk::new(42)).unwrap(),
+        deser_json::to_string(&HealthOk::new(42)).unwrap(),
         r#"{"status":"ok","db":"ok","uptime_s":42}"#
     );
     assert_eq!(
-        serde_json::to_string(&HealthDegraded::new("disk I/O error".to_owned())).unwrap(),
+        deser_json::to_string(&HealthDegraded::new("disk I/O error".to_owned())).unwrap(),
         r#"{"status":"degraded","db":"unreachable","error":"disk I/O error"}"#
     );
 }
@@ -327,7 +327,7 @@ fn maps_every_error_to_its_spec_status_and_message() {
         assert_eq!(error.status_code(), status);
         assert_eq!(error.message(), message);
         assert_eq!(
-            serde_json::to_string(&ErrorResponse::from(error)).unwrap(),
+            deser_json::to_string(&ErrorResponse::from(error)).unwrap(),
             format!(r#"{{"error":"{message}"}}"#)
         );
     }

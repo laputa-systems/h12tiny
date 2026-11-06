@@ -277,7 +277,7 @@ fn health_reports_ok_and_uptime() {
     assert_eq!(health.status, "ok");
     assert_eq!(health.db, "ok");
     assert!(health.uptime_s < 60);
-    let json = serde_json::to_string(&health).unwrap();
+    let json = deser_json::to_string(&health).unwrap();
     assert!(json.starts_with(r#"{"status":"ok","db":"ok","uptime_s":"#));
     assert!(json.ends_with('}'));
 }

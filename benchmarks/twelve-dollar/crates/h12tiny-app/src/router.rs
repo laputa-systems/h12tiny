@@ -55,16 +55,16 @@ where
 
 async fn health(State(state): State<Arc<AppState>>) -> Response {
     match state.store.health().await {
-        Ok(health) => encode(StatusCode::OK, || serde_json::to_vec(&health)),
+        Ok(health) => encode(StatusCode::OK, || deser_json::to_string(&health).map(String::into_bytes)),
         Err(degraded) => encode(StatusCode::SERVICE_UNAVAILABLE, || {
-            serde_json::to_vec(&degraded)
+            deser_json::to_string(&degraded).map(String::into_bytes)
         }),
     }
 }
 
 async fn feed(State(state): State<Arc<AppState>>) -> Response {
     match state.store.feed().await {
-        Ok(feed) => encode(StatusCode::OK, || serde_json::to_vec(&feed)),
+        Ok(feed) => encode(StatusCode::OK, || deser_json::to_string(&feed).map(String::into_bytes)),
         Err(error) => error_response(error),
     }
 }
@@ -75,7 +75,7 @@ async fn post_by_id(State(state): State<Arc<AppState>>, Path(raw): Path<String>)
         Err(error) => return error_response(error),
     };
     match state.store.post(id).await {
-        Ok(post) => encode(StatusCode::OK, || serde_json::to_vec(&post)),
+        Ok(post) => encode(StatusCode::OK, || deser_json::to_string(&post).map(String::into_bytes)),
         Err(error) => error_response(error),
     }
 }
@@ -94,7 +94,7 @@ async fn create_post(
         Err(error) => return error_response(error),
     };
     match state.store.create_post(&identity, &body).await {
-        Ok(post) => encode(StatusCode::CREATED, || serde_json::to_vec(&post)),
+        Ok(post) => encode(StatusCode::CREATED, || deser_json::to_string(&post).map(String::into_bytes)),
         Err(error) => error_response(error),
     }
 }
@@ -115,7 +115,7 @@ async fn like_post(
     match state.store.like_post(&identity, id).await {
         Ok(like) => {
             let status = StatusCode::from_u16(like.status_code()).unwrap_or(StatusCode::OK);
-            encode(status, || serde_json::to_vec(&like))
+            encode(status, || deser_json::to_string(&like).map(String::into_bytes))
         }
         Err(error) => error_response(error),
     }
@@ -128,10 +128,10 @@ async fn not_found(_request: Request) -> Response {
 fn error_response(error: AppError) -> Response {
     let status =
         StatusCode::from_u16(error.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    encode(status, || serde_json::to_vec(&ErrorResponse::from(error)))
+    encode(status, || deser_json::to_string(&ErrorResponse::from(error)).map(String::into_bytes))
 }
 
-fn encode(status: StatusCode, body: impl FnOnce() -> serde_json::Result<Vec<u8>>) -> Response {
+fn encode<E>(status: StatusCode, body: impl FnOnce() -> Result<Vec<u8>, E>) -> Response {
     match body() {
         Ok(bytes) => with_body(status, bytes),
         Err(_) => with_body(
