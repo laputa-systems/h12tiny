@@ -23,9 +23,11 @@ REG_ENV ?= MYCRATES
 PUBLIC_URL ?= https://crates.17166969.xyz
 BUCKET ?= stuff-mycrates
 CRATES ?= h12tiny-client-normalize h12tiny-tls-system h12tiny-util h12tiny-client-sync
+STUFF_DIR ?= ../stuff
 publish-mycrates:
-	STUFF_DIR=../stuff \
+	@test -x "$(STUFF_DIR)/deploy/publish-mycrates.sh" || { echo "STUFF_DIR does not point at a stuff checkout: $(STUFF_DIR)" >&2; exit 2; }
+	STUFF_DIR="$(STUFF_DIR)" \
 	CRATES="$(CRATES)" \
 	WORK_DIR="$(WORK_DIR)" PUBLISH_PORT="$(PUBLISH_PORT)" STATIC_PORT="$(STATIC_PORT)" \
 	REGISTRY="$(REGISTRY)" REG_ENV="$(REG_ENV)" PUBLIC_URL="$(PUBLIC_URL)" BUCKET="$(BUCKET)" \
-	../stuff/deploy/publish-mycrates.sh
+	"$(STUFF_DIR)/deploy/publish-mycrates.sh"
