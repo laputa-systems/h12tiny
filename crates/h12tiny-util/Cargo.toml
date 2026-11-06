@@ -1,6 +1,6 @@
 [package]
 name = "h12tiny-util"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Protocol-neutral HTTP body conveniences for h12tiny"

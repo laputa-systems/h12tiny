@@ -12,7 +12,7 @@ publish = false
 [workspace.dependencies]
 base64 = "0.23"
 futures-channel = "0.3.34"
-h12tiny = { version = "0.7.0", path = "../..", default-features = false }
+h12tiny = { version = "0.8.0", path = "../..", default-features = false }
 hmac = "0.12.1"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 deser = { version = "0.10.2", features = ["derive"] }
