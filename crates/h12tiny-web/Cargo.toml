@@ -9,8 +9,8 @@ license = "MIT"
 repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
-json = ["h12tiny-util/json", "dep:miniserde"]
-query = ["dep:miniserde"]
+json = ["h12tiny-util/json", "dep:deser", "dep:deser-json"]
+query = ["dep:deser", "dep:deser-json"]
 sse = []
 cors = []
 upgrade = ["dep:h12tiny-server", "h12tiny-server/upgrade"]
@@ -34,8 +34,10 @@ http-body = { workspace = true }
 http-body-util = "0.1.5"
 hyper = { workspace = true }
 matchit = "0.9.2"
-miniserde = { version = "0.1.46", optional = true }
+deser = { version = "0.10.2", optional = true, default-features = false }
+deser-json = { version = "0.10.2", optional = true, default-features = false }
 sha1 = { version = "0.11.0", optional = true }
 
 [dev-dependencies]
+deser = { version = "0.10.2", default-features = false, features = ["derive"] }
 futures-lite = { workspace = true }

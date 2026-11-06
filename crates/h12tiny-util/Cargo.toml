@@ -2,14 +2,14 @@
 name = "h12tiny-util"
 version = "0.7.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Protocol-neutral HTTP body conveniences for h12tiny"
 license = "MIT"
 
 repository = "https://github.com/laputa-systems/h12tiny"
 [features]
 default = []
-json = ["dep:miniserde"]
+json = ["dep:deser", "dep:deser-json"]
 
 [dependencies]
 async-io = { workspace = true }
@@ -20,7 +20,9 @@ http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = "0.1.5"
 pin-project-lite = { workspace = true }
-miniserde = { version = "0.1.46", optional = true }
+deser = { version = "0.10.2", optional = true, default-features = false }
+deser-json = { version = "0.10.2", optional = true, default-features = false }
 
 [dev-dependencies]
+deser = { version = "0.10.2", default-features = false, features = ["derive"] }
 futures-lite = { workspace = true }

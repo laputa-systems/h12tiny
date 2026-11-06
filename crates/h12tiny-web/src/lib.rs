@@ -1541,13 +1541,13 @@ fn query_value_as_json(value: &str) -> String {
             return number.to_string();
         }
     }
-    miniserde::json::to_string(&value)
+    deser_json::to_string(value).expect("a string serializes")
 }
 
 #[cfg(feature = "query")]
-/// Convert URL-encoded query pairs into a miniserde JSON object.
+/// Convert URL-encoded query pairs into a JSON object.
 ///
-/// Miniserde intentionally supports JSON rather than form encoding. Query
+/// The query extractor decodes through JSON rather than form encoding. Query
 /// values that are valid JSON primitives retain their primitive type so typed
 /// extractors such as `Query<Filters { page: u32 }>` continue to work.
 fn query_as_json(query: &str) -> Result<String, &'static str> {
@@ -1561,7 +1561,7 @@ fn query_as_json(query: &str) -> Result<String, &'static str> {
             output.push(',');
         }
         has_pair = true;
-        output.push_str(&miniserde::json::to_string(&key));
+        output.push_str(&deser_json::to_string(key.as_str()).expect("a string serializes"));
         output.push(':');
         output.push_str(&query_value_as_json(&value));
     }
@@ -1572,7 +1572,7 @@ fn query_as_json(query: &str) -> Result<String, &'static str> {
 #[cfg(feature = "query")]
 impl<S, T> FromRequest<S> for Query<T>
 where
-    T: miniserde::Deserialize + Send + 'static,
+    T: deser::de::DeserializeOwned + Send + 'static,
     S: Send + Sync + 'static,
 {
     type Rejection = Rejection;
@@ -1585,7 +1585,7 @@ where
         let query = request.uri().query().unwrap_or_default().to_owned();
         Box::pin(async move {
             query_as_json(&query)
-                .and_then(|json| miniserde::json::from_str(&json).map_err(|_| "invalid query"))
+                .and_then(|json| deser_json::from_str(&json).map_err(|_| "invalid query"))
                 .map(|value| (Self(value), request))
                 .map_err(|error| {
                     Rejection::new(StatusCode::BAD_REQUEST, format!("invalid query: {error}"))
@@ -1615,10 +1615,20 @@ impl<T> Json<T> {
 #[cfg(feature = "json")]
 impl<T> IntoResponse for Json<T>
 where
-    T: miniserde::Serialize,
+    T: deser::Serialize,
 {
     fn into_response(self) -> Response {
-        let mut response = Bytes::from(miniserde::json::to_string(&self.0)).into_response();
+        let body = match deser_json::to_string(&self.0) {
+            Ok(body) => body,
+            Err(error) => {
+                return Rejection::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("failed to serialize JSON response: {error}"),
+                )
+                .into_response();
+            }
+        };
+        let mut response = Bytes::from(body).into_response();
         response
             .headers_mut()
             .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -1629,7 +1639,7 @@ where
 #[cfg(feature = "json")]
 impl<S, T> FromRequest<S> for Json<T>
 where
-    T: miniserde::Deserialize + Send + 'static,
+    T: deser::de::DeserializeOwned + Send + 'static,
     S: Send + Sync + 'static,
 {
     type Rejection = Rejection;
@@ -1649,10 +1659,7 @@ where
                     Rejection::new(StatusCode::BAD_REQUEST, "failed to read JSON body")
                 }
             })?;
-            let text = std::str::from_utf8(&bytes).map_err(|_| {
-                Rejection::new(StatusCode::BAD_REQUEST, "invalid JSON: miniserde error")
-            })?;
-            let value = miniserde::json::from_str(text).map_err(|error| {
+            let value = deser_json::from_slice(&bytes).map_err(|error| {
                 Rejection::new(StatusCode::BAD_REQUEST, format!("invalid JSON: {error}"))
             })?;
             Ok((Self(value), Request::from_parts(parts, empty_body())))
@@ -1667,7 +1674,7 @@ where
 #[cfg(feature = "json")]
 impl<S, T> FromRequest<S> for Option<Json<T>>
 where
-    T: miniserde::Deserialize + Send + 'static,
+    T: deser::de::DeserializeOwned + Send + 'static,
     S: Send + Sync + 'static,
 {
     type Rejection = Rejection;
@@ -1690,10 +1697,7 @@ where
             let value = if bytes.is_empty() {
                 None
             } else {
-                let text = std::str::from_utf8(&bytes).map_err(|_| {
-                    Rejection::new(StatusCode::BAD_REQUEST, "invalid JSON: miniserde error")
-                })?;
-                Some(Json(miniserde::json::from_str(text).map_err(|error| {
+                Some(Json(deser_json::from_slice(&bytes).map_err(|error| {
                     Rejection::new(StatusCode::BAD_REQUEST, format!("invalid JSON: {error}"))
                 })?))
             };
@@ -2847,7 +2851,7 @@ mod tests {
     #[cfg(feature = "json")]
     #[test]
     fn json_extractor_and_response_are_bounded() {
-        #[derive(miniserde::Deserialize, miniserde::Serialize)]
+        #[derive(deser::Deserialize, deser::Serialize)]
         struct Payload {
             name: String,
         }
@@ -2867,8 +2871,92 @@ mod tests {
 
     #[cfg(feature = "json")]
     #[test]
+    fn json_wire_format_keeps_field_order_and_nulls() {
+        #[derive(deser::Deserialize, deser::Serialize)]
+        struct Payload {
+            name: String,
+            count: u64,
+            note: Option<String>,
+        }
+
+        let router = Router::<()>::new().route(
+            "/json",
+            post(|Json(payload): Json<Payload>| async move { Json(payload) }),
+        );
+        for (input, output) in [
+            (
+                r#"{"name":"tiny","count":3}"#,
+                r#"{"name":"tiny","count":3,"note":null}"#,
+            ),
+            (
+                r#"{"extra":[1],"note":"n","count":3,"name":"tiny"}"#,
+                r#"{"name":"tiny","count":3,"note":"n"}"#,
+            ),
+        ] {
+            let response = block_on(
+                router.call(
+                    Request::post("/json")
+                        .body(h12tiny_util::bytes_body(input))
+                        .unwrap(),
+                ),
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = block_on(response.into_body().collect()).unwrap().to_bytes();
+            assert_eq!(&body[..], output.as_bytes());
+        }
+
+        for input in [&b"{\"name\":\"\xff\",\"count\":1}"[..], b"{\"name\":1}", b"["] {
+            let response = block_on(
+                router.call(
+                    Request::post("/json")
+                        .body(h12tiny_util::bytes_body(input.to_vec()))
+                        .unwrap(),
+                ),
+            );
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[cfg(feature = "query")]
+    #[test]
+    fn query_values_keep_their_primitive_types() {
+        #[derive(deser::Deserialize)]
+        struct Filters {
+            page: u32,
+            active: bool,
+            ratio: f64,
+            text: String,
+            tag: Option<String>,
+        }
+
+        let router = Router::<()>::new().route(
+            "/search",
+            get(|Query(filters): Query<Filters>| async move {
+                format!(
+                    "{}:{}:{}:{}:{:?}",
+                    filters.page, filters.active, filters.ratio, filters.text, filters.tag
+                )
+            }),
+        );
+        let request = Request::get("/search?page=3&active=true&ratio=0.5&text=a%20%22b%22")
+            .body(h12tiny_util::empty_body())
+            .unwrap();
+        let response = block_on(router.call(request));
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = block_on(response.into_body().collect()).unwrap().to_bytes();
+        assert_eq!(&body[..], b"3:true:0.5:a \"b\":None");
+
+        let request = Request::get("/search?page=x")
+            .body(h12tiny_util::empty_body())
+            .unwrap();
+        let response = block_on(router.call(request));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(feature = "json")]
+    #[test]
     fn optional_json_distinguishes_an_empty_body_from_invalid_json() {
-        #[derive(miniserde::Deserialize)]
+        #[derive(deser::Deserialize)]
         struct Payload {
             name: String,
         }
@@ -2904,7 +2992,7 @@ mod tests {
     #[cfg(feature = "query")]
     #[test]
     fn query_and_raw_query_extract_without_protocol_state() {
-        #[derive(miniserde::Deserialize)]
+        #[derive(deser::Deserialize)]
         struct Filters {
             page: u32,
         }

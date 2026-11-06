@@ -53,7 +53,7 @@ the enabled normal graph by [the dependency check](../scripts/check-normal-depen
 Cargo.lock also contains optional and development packages and is not that
 check.
 
-Optional serialization remains at the util/web layer. `miniserde` is enabled
+Optional serialization remains at the util/web layer. `deser` is enabled
 only by the JSON or query features; plain body helpers and the plain router do
 not select it.
 

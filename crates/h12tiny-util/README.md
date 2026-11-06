@@ -6,6 +6,6 @@ pools, server listeners, or routing.
 
 ## Features
 
-- `json`: JSON bodies through `miniserde`. This is the only serialization surface.
+- `json`: JSON bodies through `deser` and `deser-json`. This is the only serialization surface.
 
 See the [application layer guide](../../docs/application.md).
