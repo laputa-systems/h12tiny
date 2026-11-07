@@ -4,13 +4,13 @@
 //! when the store changes. Explicit root stores and caller-provided verifiers
 //! stay under caller control and are never merged with system trust.
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use rustc_hash::FxHashMap;
 use rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
@@ -969,7 +969,7 @@ struct TrackedDir {
     path: PathBuf,
     modified: Option<SystemTime>,
     identity: Option<FileIdentity>,
-    entries: BTreeMap<OsString, TrackedFile>,
+    entries: FxHashMap<OsString, TrackedFile>,
 }
 
 impl TrustFingerprint {
@@ -1040,7 +1040,7 @@ impl TrustFingerprint {
                 format!("trust path {} is not a directory", path.display()),
             ));
         }
-        let mut entries = BTreeMap::new();
+        let mut entries = FxHashMap::default();
         let listing = std::fs::read_dir(path).map_err(|error| {
             SystemTrustError::new(
                 SystemTrustErrorKind::Unreadable,

@@ -40,6 +40,7 @@ http = "1.5.0"
 http-body = "1.1.0"
 hyper = { package = "laputa-hyper-futures-lite", version = "=1.12.0-beta.1", path = "crates/laputa-hyper-futures-lite", default-features = false }
 pin-project-lite = "0.2.17"
+rustc-hash = "2"
 # h12tiny builds every TLS config with `builder_with_provider`, selecting
 # Graviola explicitly. Do not enable Rustls' `custom-provider` feature: Cargo
 # feature unification would otherwise disable another library's unambiguous
