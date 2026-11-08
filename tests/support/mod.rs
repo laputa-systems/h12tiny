@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use h12tiny::runtime::BoxSendFuture;
-use http_body::{Body, Frame};
+use http_body::{Body, Frame, SizeHint};
 
 #[derive(Clone)]
 pub struct SmolExecutor;
@@ -55,6 +55,11 @@ impl Body for FullBody {
 
     fn is_end_stream(&self) -> bool {
         self.0.is_none()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        let len = self.0.as_ref().map_or(0, Bytes::len);
+        SizeHint::with_exact(u64::try_from(len).unwrap())
     }
 }
 
