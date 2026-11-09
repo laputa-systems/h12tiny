@@ -32,19 +32,26 @@ use matchit::Router as MatchRouter;
 
 use h12tiny_util::{boxed_body, collect_bytes_limited, BoxBody, BoxError};
 
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 use base64::Engine as _;
 #[cfg(feature = "websocket")]
-use fastwebsockets::{after_handshake_split, FragmentCollectorRead, Role, WebSocketWrite};
-/// WebSocket frame types exposed by the optional RFC 6455 adapter.
-#[cfg(feature = "websocket")]
+use fastwebsockets::{after_handshake_split, Role};
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
+use fastwebsockets::{FragmentCollectorRead, WebSocketWrite};
+/// WebSocket frame types exposed by the optional RFC 6455 adapters.
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 pub use fastwebsockets::{
     Frame as WebSocketFrame, OpCode as WebSocketOpCode, Payload as WebSocketPayload, WebSocketError,
 };
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 use h12tiny_core::io::HyperIo;
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 use sha1::{Digest as _, Sha1};
+
+#[cfg(feature = "websocket-client")]
+mod websocket_client;
+#[cfg(feature = "websocket-client")]
+pub use websocket_client::{connect_websocket, WebSocketConnectError};
 
 /// The request body accepted by handlers after the router erases the
 /// transport's concrete body type.
@@ -2200,34 +2207,37 @@ where
     }
 }
 
-/// The reader half of an accepted server-role WebSocket connection.
+/// The reader half of an upgraded WebSocket connection, in either role.
 ///
 /// This is a [`FragmentCollectorRead`] so applications receive complete text
 /// and binary messages and validated UTF-8 text. Control-frame replies remain
 /// explicit through the callback passed to `read_frame`.
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 pub type WebSocketReader =
-    FragmentCollectorRead<futures_lite::io::ReadHalf<HyperIo<h12tiny_server::upgrade::Upgraded>>>;
+    FragmentCollectorRead<futures_lite::io::ReadHalf<HyperIo<hyper::upgrade::Upgraded>>>;
 
-/// The writer half of an accepted server-role WebSocket connection.
-#[cfg(feature = "websocket")]
+/// The writer half of an upgraded WebSocket connection, in either role.
+///
+/// A connection from [`WebSocketUpgrade`] writes unmasked server frames; one
+/// from `connect_websocket` masks every client frame.
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 pub type WebSocketWriter =
-    WebSocketWrite<futures_lite::io::WriteHalf<HyperIo<h12tiny_server::upgrade::Upgraded>>>;
+    WebSocketWrite<futures_lite::io::WriteHalf<HyperIo<hyper::upgrade::Upgraded>>>;
 
-/// A framed, server-role RFC 6455 connection obtained from a successful HTTP
-/// upgrade.
+/// A framed RFC 6455 connection obtained from a successful HTTP/1.1 upgrade,
+/// accepted by a server route or opened by a client.
 ///
 /// h12tiny owns only HTTP validation, the switching response, and I/O/frame
 /// adaptation. Application protocol semantics—including subprotocols,
 /// authentication, message handling, backpressure, and task ownership—remain
 /// with the caller.
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 pub struct WebSocketConnection {
     reader: WebSocketReader,
     writer: WebSocketWriter,
 }
 
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 impl WebSocketConnection {
     /// Split the connection into independently owned reader and writer halves.
     pub fn split(self) -> (WebSocketReader, WebSocketWriter) {
@@ -2416,7 +2426,7 @@ fn header_has_token(request: &Request, header: &str, expected: &str) -> bool {
         .any(|token| token.trim().eq_ignore_ascii_case(expected))
 }
 
-#[cfg(feature = "websocket")]
+#[cfg(any(feature = "websocket", feature = "websocket-client"))]
 fn websocket_accept(key: &str) -> String {
     let mut digest = Sha1::new();
     digest.update(key.as_bytes());

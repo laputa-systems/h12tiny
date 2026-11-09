@@ -71,6 +71,7 @@ server_h2=$(tree -p h12tiny-server --no-default-features --features http2)
 util_plain=$(tree -p h12tiny-util --no-default-features)
 web_plain=$(tree -p h12tiny-web --no-default-features)
 web_websocket=$(tree -p h12tiny-web --no-default-features --features websocket)
+web_websocket_client=$(tree -p h12tiny-web --no-default-features --features websocket-client)
 facade_h1=$(tree -p h12tiny --no-default-features --features client,http1)
 facade_sync_tls=$(tree -p h12tiny --no-default-features --features client-sync,tls)
 facade_websocket=$(tree -p h12tiny --no-default-features --features websocket)
@@ -132,6 +133,12 @@ done
 for package in base64 laputa-fastwebsockets-futures-lite sha1; do
     require_present "$package" "$facade_websocket" "facade WebSocket feature"
 done
+for package in base64 getrandom laputa-fastwebsockets-futures-lite h12tiny-core sha1; do
+    require_present "$package" "$web_websocket_client" "web WebSocket client feature"
+done
+for package in h12tiny-server h12tiny-client laputa-h2-futures-lite serde_json; do
+    require_absent "$package" "$web_websocket_client" "web WebSocket client feature"
+done
 for package in laputa-h2-futures-lite h12tiny-server h12tiny-web h12tiny-tls-system rustls-native-certs webpki-roots rustls serde serde_json tokio; do
     require_absent "$package" "$facade_h1" "facade H1-only client"
 done
@@ -156,6 +163,7 @@ for label_and_graph in \
     "util without json:$util_plain" \
     "web without json/query:$web_plain" \
     "web WebSocket feature:$web_websocket" \
+    "web WebSocket client feature:$web_websocket_client" \
     "facade H1-only client:$facade_h1" \
     "facade TLS sync client:$facade_sync_tls" \
     "facade WebSocket feature:$facade_websocket"; do
@@ -182,6 +190,8 @@ cargo check -p h12tiny --no-default-features --features client-sync,tls
 cargo check -p h12tiny --no-default-features --features server,http1
 cargo check -p h12tiny --no-default-features --features server,http2
 cargo check -p h12tiny --no-default-features --features websocket
+cargo check -p h12tiny-web --no-default-features --features websocket-client
+cargo check -p h12tiny --no-default-features --features websocket-client
 cargo check -p h12tiny --no-default-features --features client,server,http1,http2,tls
 cargo check -p h12tiny --no-default-features --features full
 

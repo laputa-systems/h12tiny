@@ -500,6 +500,7 @@ dependencies = [
  "deser",
  "deser-json",
  "futures-util",
+ "getrandom 0.4.3",
  "h12tiny-core",
  "h12tiny-server",
  "h12tiny-util",

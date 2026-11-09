@@ -18,6 +18,9 @@ upgrade = ["dep:h12tiny-server", "h12tiny-server/upgrade"]
 # builds the 101 response, and adapts the resulting stream to the local
 # futures-lite frame parser; application message policy remains outside h12tiny.
 websocket = ["upgrade", "dep:base64", "dep:fastwebsockets", "dep:futures-lite", "dep:h12tiny-core", "dep:sha1"]
+# Client role of the same boundary: the RFC 6455 opening handshake over a
+# caller-dialed stream, without selecting the server crate.
+websocket-client = ["dep:base64", "dep:fastwebsockets", "dep:futures-lite", "dep:getrandom", "dep:h12tiny-core", "dep:sha1", "hyper/client", "hyper/http1"]
 
 [dependencies]
 async-io = { workspace = true }
@@ -26,6 +29,7 @@ bytes = { workspace = true }
 fastwebsockets = { package = "laputa-fastwebsockets-futures-lite", version = "0.10.1", path = "../laputa-fastwebsockets-futures-lite", optional = true }
 futures-lite = { workspace = true, optional = true }
 futures-util = { workspace = true }
+getrandom = { version = "0.4.3", optional = true, features = ["std"] }
 h12tiny-core = { version = "0.8.0", path = "../h12tiny-core", default-features = false, optional = true }
 h12tiny-server = { version = "0.8.0", path = "../h12tiny-server", default-features = false, optional = true }
 h12tiny-util = { version = "0.8.0", path = "../h12tiny-util", default-features = false }

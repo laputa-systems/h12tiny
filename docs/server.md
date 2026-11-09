@@ -53,4 +53,7 @@ protocols. It remains separate from ordinary routing. The optional web
 `websocket` feature validates an RFC 6455 handshake, constructs the 101
 response, and adapts the upgraded stream to a futures-lite frame parser.
 Message, authentication, session, and keepalive policy remain application
-owned.
+owned. The web `websocket-client` feature is the client role of the same
+boundary: `connect_websocket` sends the opening handshake over a stream the
+caller dialed, checks the `101` response and `Sec-WebSocket-Accept`, and
+returns the same `WebSocketConnection` with masked client frames.

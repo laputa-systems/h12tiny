@@ -74,7 +74,10 @@ cors = ["web", "h12tiny-web/cors"]
 # futures-lite framed upgraded connection. Raw `HttpUpgrade` remains available
 # through `upgrade` for applications that own another upgrade protocol.
 websocket = ["web", "upgrade", "h12tiny-web/websocket"]
-full = ["client", "client-sync", "server", "util", "web", "http1", "http2", "tls", "upgrade", "json", "query", "sse", "cors", "websocket"]
+# The client role: an RFC 6455 opening handshake over a caller-dialed stream,
+# returning the same framed connection type as `websocket`.
+websocket-client = ["web", "core", "h12tiny-web/websocket-client"]
+full = ["client", "client-sync", "server", "util", "web", "http1", "http2", "tls", "upgrade", "json", "query", "sse", "cors", "websocket", "websocket-client"]
 
 # These are runnable integration tools rather than protocol-only examples.
 # Keep feature-minimal library builds useful without trying to compile their
