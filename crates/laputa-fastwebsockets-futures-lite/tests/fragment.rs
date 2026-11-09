@@ -196,3 +196,29 @@ fn control_frames_reject_payloads_larger_than_125_bytes() {
     }
   });
 }
+
+#[test]
+fn split_fragment_collector_limits_collected_message_size() {
+  futures_lite::future::block_on(async {
+    let mut data = raw_frame(false, OpCode::Text, b"0123456");
+    data.extend(raw_frame(true, OpCode::Continuation, b"789abcd"));
+    let (reader, _) = after_handshake_split(
+      Cursor::new(data.clone()),
+      futures_lite::io::sink(),
+      Role::Client,
+    );
+    let mut messages = fws::FragmentCollectorRead::new(reader);
+    messages.set_max_message_size(15);
+    let frame = messages.read_frame(&mut noop_send).await.unwrap();
+    assert_eq!(&*frame.payload, b"0123456789abcd");
+
+    let (reader, _) = after_handshake_split(
+      Cursor::new(data),
+      futures_lite::io::sink(),
+      Role::Client,
+    );
+    let mut messages = fws::FragmentCollectorRead::new(reader);
+    messages.set_max_message_size(14);
+    assert_frame_too_large(messages.read_frame(&mut noop_send).await);
+  });
+}

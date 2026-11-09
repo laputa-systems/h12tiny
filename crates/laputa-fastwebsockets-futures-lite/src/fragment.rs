@@ -61,6 +61,15 @@ impl<'f, S> FragmentCollectorRead<S> {
     }
   }
 
+  /// Sets the maximum size in bytes of one frame and of one collected
+  /// message. A frame or message at or above the limit fails the read with
+  /// [`WebSocketError::FrameTooLarge`].
+  ///
+  /// Default: 64 MiB
+  pub fn set_max_message_size(&mut self, max_message_size: usize) {
+    self.read_half.max_message_size = max_message_size;
+  }
+
   /// Reads a WebSocket frame, collecting fragmented messages until the final frame is received and returns the completed message.
   ///
   /// Text frames payload is guaranteed to be valid UTF-8.
