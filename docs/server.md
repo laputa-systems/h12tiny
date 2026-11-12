@@ -41,6 +41,10 @@ timeout. Add `on_connection_rejected` to observe streams closed at capacity.
 Transient listener accept errors are retried with a short backoff; fatal
 accept errors stop the loop.
 
+The header timeout starts after HTTP/1 selection. TLS acceptance and cleartext
+protocol detection have no setup deadline, including with the production
+preset; shutdown still cancels them.
+
 Draining established streams has no deadline unless `drain_timeout` is set.
 `Serve::production` and `TlsServe::production` use 30 s. When the deadline
 expires, remaining connection futures are dropped and the lifecycle future

@@ -33,9 +33,19 @@ method returns 405 with an `Allow` header listing the route's registered
 methods. Router clones share an immutable route table and matcher; builder
 changes to a clone leave the original router's routes intact.
 
+`nest` and `merge` currently flatten child routes and retain one state value:
+an existing parent state wins, otherwise the first configured child supplies it.
+Child CORS is not retained, and an adopted child fallback becomes global.
+These composition limits are tracked in [the backlog](../TODO.md).
+
 Optional features add JSON and query extraction, SSE event
 framing and idle-only comment keepalives, structural CORS, raw upgrade access,
 and the narrow WebSocket handshake/frame boundary.
+
+The query extractor currently infers JSON scalars before deserializing. A
+numeric-looking value cannot populate a `String`, and the text `null` becomes
+absence for `Option<String>`. The backlog tracks preserving the requested
+field type and original string spelling.
 
 SSE data frames CR, LF, and CRLF as line breaks. `Event::event` and `Event::id`
 return `Result<Event, EventFieldError>`; event names reject CR/LF, and identifiers

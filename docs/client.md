@@ -49,8 +49,8 @@ connections per origin, two stale retries, 10 s DNS/TCP/TLS deadlines, and
 builder calls override individual values.
 
 Request deadlines have separate scopes: DNS, TCP establishment, TLS/ALPN, and
-dispatch through response headers. They are request-scoped and do not include
-streaming response-body time. Pool idle eviction is a separate client setting.
+dispatch through response headers. These scopes exclude waiting for pool
+capacity and streaming response-body time. Pool idle eviction is separate.
 Every configured timeout must be greater than zero: a zero duration expires
 before any work can start and is rejected by the builder that accepts it. Do
 not replace these scopes with a whole-request deadline that expires active

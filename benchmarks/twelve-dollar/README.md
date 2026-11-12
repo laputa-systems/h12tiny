@@ -64,6 +64,4 @@ for the graceful drain. Both are already present in the root dependency graph.
 - `crates/app-core`: SQLite, JWT, JSON, and validation, with no HTTP.
 - `crates/h12tiny-app`: the `h12tiny-twelve` server and the static
   `h12tiny-static` diagnostic server.
-- `crates/axum-ref`: the Axum reference server.
-- `crates/attribution`: SQLite-only and microbenchmark attribution.
 - `run.sh`, `box/`, `tools/`: the local harness.

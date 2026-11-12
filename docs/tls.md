@@ -13,7 +13,7 @@ and caller-supplied verifiers stay under caller control.
 
 | Platform | Default backend | Distrust handling |
 | --- | --- | --- |
-| Linux and other Unix | System PEM store via `rustls-native-certs`, verified with rustls-webpki and the explicit Graviola provider | Administrator removals take effect on later handshakes; empty or unreadable stores fail closed |
+| Linux and other Unix | System PEM store via `rustls-native-certs`, verified with rustls-webpki and the explicit Graviola provider | Certificate verification reloads changed stores; empty or unreadable stores fail closed |
 | macOS | Native Security.framework evaluation via `rustls-platform-verifier` with the explicit Graviola provider, unless `SSL_CERT_FILE` or `SSL_CERT_DIR` selects PEM roots, which take precedence | Platform distrust and constraint decisions are honored as the OS reports them; an explicit file selection reloads on change and fails closed like Unix |
 
 `openssl-probe` only locates the system CA paths. It is not a TLS or
@@ -53,23 +53,22 @@ rather than papered over.
 
 ## Trust freshness
 
-When the verifier uses PEM files (Unix, or macOS with `SSL_CERT_FILE` or
-`SSL_CERT_DIR` set), the default verifier reloads the selected store when
-its files change and re-verifies on later handshakes. A failed reload fails
-the handshake rather than reusing stale trust. Requests already admitted may
-complete; new handshakes observe the refreshed store. There is no background
-polling thread; each handshake stats the store paths and only reparses
-certificates when they changed. When macOS uses native platform evaluation
-(no file selection), each handshake evaluates live against the OS and there
-is nothing to refresh.
+On a full handshake that invokes certificate verification, the PEM verifier
+stats the selected store and reloads changed files. A failed reload fails
+verification. There is no background polling thread. macOS native evaluation
+consults the OS when verification runs instead of maintaining a PEM snapshot.
+
+Managed configurations currently retain Rustls's default session-resumption
+cache. Resumption can reuse earlier certificate approval without invoking the
+verifier, so a new transport connection does not guarantee refreshed trust.
+Established pooled connections also keep serving. Full certificate-verifying
+handshakes use current trust; resumption freshness is deferred work in
+[the backlog](../TODO.md).
 
 `Client::new()` and `Connector::new()` load lazily so their constructors
 stay infallible: the first handshake reports an unusable store as a TLS
 error. `ClientTlsConfigBuilder::build()` loads eagerly and returns the
 failure instead, which is the fail-fast path for callers that need it.
-
-The async client's pooled connections are unaffected: established sessions
-keep serving, while new handshakes verify against current trust.
 
 ## Custom trust
 
@@ -79,7 +78,8 @@ trust. Callers can:
 - Replace the store with `root_certificates(...)`. Replacement never merges
   with system roots.
 - Snapshot system trust plus one anchor with `add_root_certificate(...)`.
-  The snapshot boundary is the build; later system changes do not affect it.
+  The snapshot is taken by that call while system trust is selected, before
+  `build()`; later system changes do not affect it.
 - Replace the whole Rustls configuration with
   `Builder::tls_config(...)` or `ConnectorBuilder::tls_config(...)`,
   including a private verifier. Custom configurations remain the caller's
@@ -94,16 +94,13 @@ from the configured offerings rather than replacing them. Selecting
 `Protocol::Auto` removes the HTTP/1.1 restriction; other custom ALPN
 offerings remain explicit caller policy.
 
-## Why verifier-level mitigation matters
+## Distrusted intermediates
 
-The October 2026 eMudhra incident exposed recoverable intermediate private
-keys, some cross-signed under other trusted roots. Removing a root is not
-sufficient when a compromised intermediate can still chain to an alternative
-trusted anchor. The minimum patched verifier is `rustls-webpki 0.103.16`,
-which rejects paths containing the distrusted intermediate public keys even
-when another trusted root would otherwise validate them. h12tiny requires at
-least that version, so updating the host store and updating the verifier are
-independent layers and both are enforced.
+Removing a root does not reject an intermediate that chains to another trusted
+anchor. The workspace requires `rustls-webpki 0.103.16` or later, whose verifier
+rejects the distrusted intermediate public keys covered by the
+[system-trust fixtures](../tests/support/tls_system.rs). Host-store updates
+and verifier updates remain separate requirements.
 
 ## Server side
 

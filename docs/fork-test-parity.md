@@ -1,9 +1,10 @@
 # Fork test parity ledger
 
 Every inherited test or test target in the h2 and hyper forks is classified
-here. Counts are `cargo test -- --list` counts from the reference release, not
-annotation counts. A closed suite has `Ported + Excluded` equal to its
-reference count, and the gate refuses a row still marked `not ported`.
+here. `Reference count` is the expected `cargo test -- --list` total, including
+ignored cases. `Ported` retains the recorded count convention; the H2 library
+row excludes its one upstream-ignored case. The gate compares `--list` with
+`Reference count`, checks the exclusion cap, and refuses `not ported` rows.
 
 Local regressions (`h2_975`, `wake_loss_is_detected`, and the wake-driven
 flow-control exchange) are separate rows and do not inflate inherited counts.
@@ -115,8 +116,9 @@ The fork corpus is the ledger denominator when it differs from upstream:
   authoritative, strips `Content-Length`, and closes the connection. Both
   choices are permitted by RFC 9112; the fork rejects ambiguous framing before
   dispatch so a peer cannot observe different framings.
-- Every other inherited h2 test file and every inherited Hyper test file is
-  byte-identical to the reference release.
+- The byte-identity comparison above describes the pre-port reference corpus.
+  Current inherited test harnesses have been ported to futures-I/O; their
+  source files are no longer byte-identical to the upstream release.
 
 ### Wake negative control
 

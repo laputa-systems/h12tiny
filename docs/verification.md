@@ -5,8 +5,8 @@ workspace checks below are the broader integration gates.
 
 ## Commands
 
-- `cargo check --workspace --all-features` checks all crate feature surfaces.
-- `cargo test --workspace --all-features` runs unit, transport, lifecycle,
+- `cargo check --locked --workspace --all-features` checks all crate feature surfaces.
+- `cargo test --locked --workspace --all-features` runs unit, transport, lifecycle,
   web, and compatibility tests.
 - `scripts/check-features.sh` compiles the component/facade matrix, checks
   required dependency absences, and exercises H1-only TLS and H2-only
@@ -44,42 +44,40 @@ dependency policy on macOS and Linux. A separate Linux job checks the
 declared minimum compiler versions. The fork packages are excluded from the
 h12tiny Cargo workspace, so run their commands above when changing fork code.
 
-The root workspace and protocol forks resolve `laputa-*` runtime crates from
-crates.io. A local smolith checkout is not required for these commands.
+The manifests select published `laputa-*` runtime versions. The repository's
+[Cargo configuration](../.cargo/config.toml) resolves crates.io through the
+`stuff` archive. A local smolith checkout is not required for these commands.
 The smolith repository separately tests an h12tiny checkout, with
 runtime dependencies redirected to local smolith crates, using its `h12tiny.sh`
 fixture script.
 
-The fork protocol gate runs in CI as the `protocol-forks` job, not manually.
-`scripts/verify-protocols.sh` covers the H2 library, the H2 inherited
-integration crate, the wake-driven H2 flow-control regression, the shared
-futures-I/O test support crate, Hyper check and its inherited tests, and
-fastwebsockets. The gate prints a count per suite and fails when a suite runs
-zero tests or reports a failure. `docs/fork-test-parity.md` records the
-classification of every inherited fork test. The focused H2 flow-control test
-uses a futures-I/O transport and a wake-driven executor, then checks both
-`WINDOW_UPDATE` frames after capacity release and reads the next data frame.
+The [parity ledger](fork-test-parity.md) records the inherited fork tests and
+local regressions. The flow-control regression uses futures-I/O and a
+wake-driven executor to check `WINDOW_UPDATE` after capacity release and read
+the next data frame. The shared support crate includes a missing-wake control.
 
 The pinned nightly is the development toolchain; see the
 [current compiler requirements](../README.md#add-it) for consumers.
 
 `make lint` checks workspace Clippy with all targets and features.
-`make publish` bumps h12tiny workspace minor versions, commits and tags the
-release, and publishes h12tiny crates in dependency order. It does not publish
-the fork packages. The fork manifests require smolith crates, at
-`laputa-h2-futures-lite` 0.4.20-beta.2, `laputa-hyper-futures-lite`
-1.12.0-beta.1, and `laputa-fastwebsockets-futures-lite` 0.10.1. Check each
-required version on crates.io before releasing. Publish missing smolith
-packages first, followed by the forks in that order. Packaging a fork drops
-`path` and leaves the version requirement, so an unpublished version cannot
-be resolved from crates.io.
-`make publish` checks for a Cargo registry login before starting. It targets
-crates.io explicitly, so the repository's source replacement cannot redirect
-release queries or publish verification. It can resume a partial publication
-while HEAD remains the matching release commit. Run it only when releasing, with `TMPDIR` set to the
-repository's `.work/tmp` for its backup files. See the
+`make publish` bumps workspace minor versions, commits and tags the release,
+and publishes workspace crates to crates.io in dependency order. It then runs
+`publish-mycrates` for the subset selected by `CRATES` in the [Makefile](../Makefile).
+The fork packages are separate releases. Check their declared version
+requirements in the [manifests](../crates/) before releasing dependents;
+packaging drops `path`, so required versions must exist in the registry.
+Publish missing runtime dependencies first, then H2, Hyper, and fastwebsockets.
+
+The workspace release checks for a Cargo login and explicitly targets
+crates.io outside the repository configuration. It resumes partial publication
+while HEAD remains the matching release commit. Set `TMPDIR` to the
+repository's `.work/tmp` for backup files. See the
 [upstream rebase guide](../.agents/skills/rebase-upstreams/SKILL.md) and the
 [fork publish guide](../.agents/skills/publish-forks/SKILL.md) for fork releases.
+
+The [benchmark workspace](../benchmarks/twelve-dollar/Cargo.toml) is an
+in-repository path consumer with a separate lockfile. Its current facade
+requirement is stale; the resolution defect is in [the backlog](../TODO.md).
 
 External interoperability and performance runs require separate tools and
 endpoint setup; see the [scripts guide](../scripts/README.md). Performance

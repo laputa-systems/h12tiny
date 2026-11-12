@@ -16,5 +16,6 @@ No feature is enabled by default.
 - `upgrade`: raw HTTP/1 upgrades through `h12tiny-server`.
 - `websocket`: the RFC 6455 HTTP/1.1 handshake and frame adaptation, without
   application message policy.
+- `websocket-client`: the client opening handshake over a caller-dialed stream.
 
 See the [application layer guide](../../docs/application.md).

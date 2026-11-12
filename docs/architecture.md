@@ -34,11 +34,10 @@ server protocol selection.
 
 The repository includes the Laputa Hyper, H2, and fastwebsockets crates under
 [`crates/`](../crates/). h12tiny and Hyper use local path dependencies for
-those packages. Cargo still uses each package's declared version when it
-publishes a crate. Those versions are ahead of the published registry
-artifacts, which still select upstream runtimes, so publish the forks before
-removing the paths. See [verification](verification.md). The fork packages
-keep their own manifests and verification commands.
+those packages. Packaging removes the local paths and retains the declared
+version requirements. Publish any missing runtime and fork dependencies before
+their dependents. See [verification](verification.md). The fork packages keep
+their own manifests and verification commands.
 
 Production async code uses Hyper's executor boundary and the core timer
 adapter; it has no Tokio runtime dependency. The blocking client is independent

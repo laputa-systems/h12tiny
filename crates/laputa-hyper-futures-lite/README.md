@@ -17,8 +17,9 @@ See the [API documentation](https://docs.rs/laputa-hyper-futures-lite).
 For futures-I/O adapters, connection establishment, pooling, or listener
 lifecycle, use [h12tiny](../../README.md). Its [examples](../../examples/)
 exercise this fork with futures-I/O transports.
-The inherited Hyper [examples](examples/README.md) and Tokio test harness
-require adaptation before use with this fork.
+The inherited Hyper [examples](examples/README.md) still require adaptation.
+The ported test harness runs with futures-I/O in the
+[fork gate](../../docs/verification.md).
 
 ## License
 
